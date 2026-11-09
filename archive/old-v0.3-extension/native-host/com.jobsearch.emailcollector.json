@@ -1,0 +1,9 @@
+{
+    "path":  "C:\\Live\\JobSearch\\native-host\\publish\\JobSearch.NativeHost.exe",
+    "description":  "Writes the LinkedIn email workbook into the JobSearch project folder.",
+    "name":  "com.jobsearch.emailcollector",
+    "allowed_origins":  [
+                            "chrome-extension://fllcppkkpmeeknpeomcnhabkgpncbice/"
+                        ],
+    "type":  "stdio"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "job-post-email-tracker",
+  "private": true,
+  "version": "0.2.0",
+  "workspaces": [
+    "extension",
+    "service"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace extension && node scripts/sync-extension.mjs",
+    "service": "npm run start --workspace service",
+    "test:service": "npm run test --workspace service",
+    "test:extension": "npm run test --workspace extension",
+    "typecheck:service": "npm run typecheck --workspace service"
+  }
+}

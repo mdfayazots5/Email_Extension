@@ -1,0 +1,31 @@
+/data/tracker.db
+/data/tracker.db-shm
+/data/tracker.db-wal
+/data/backups/
+/node_modules/
+/extension/node_modules/
+/extension/dist/
+/service/node_modules/
+/service/token.txt
+/service/.env
+# Built extension copied to the root by scripts/sync-extension.mjs
+/manifest.json
+/index.html
+/index.js
+/popup.html
+/popup.js
+/service-worker.js
+/content-script.js
+/assets/
+# Native host build output and service logs
+/native-host/bin/
+/native-host/obj/
+/native-host/publish/
+/data/logs/
+# Personal email data (master lists, exports, legacy v0.3 collector data)
+/data/master/
+/data/exports/
+/data/legacy-v0.3/
+# Visual Studio cache
+/.vs/
+/archive/**/obj/

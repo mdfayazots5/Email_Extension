@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Email Collector",
+  "version": "0.3.0",
+  "description": "Collects unique email addresses from LinkedIn content-search posts when started.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "nativeMessaging",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/*"
+  ],
+  "action": {
+    "default_title": "Email Collector",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/search/results/content/*"
+      ],
+      "js": [
+        "email-extractor.js",
+        "content.js"
+      ]
+    }
+  ]
+}

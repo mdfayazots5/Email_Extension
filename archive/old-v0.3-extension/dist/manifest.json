@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Job Post Email Tracker",
+  "version": "0.1.0",
+  "description": "Track job post email captures.",
+  "permissions": ["sidePanel"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "http://localhost:4317/*"
+  ],
+  "action": {
+    "default_title": "Open Job Post Email Tracker"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/search/results/content/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

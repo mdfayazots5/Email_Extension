@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Email Extension",
+  "version": "0.1.0",
+  "description": "Collects email addresses from LinkedIn job posts.",
+  "permissions": ["storage", "tabs", "sidePanel", "nativeMessaging"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "http://127.0.0.1:4317/*",
+    "http://localhost:4317/*"
+  ],
+  "action": {
+    "default_title": "Email Extension",
+    "default_popup": "popup.html"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/search/results/content/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

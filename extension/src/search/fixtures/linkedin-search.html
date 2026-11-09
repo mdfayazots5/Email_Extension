@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <body>
+    <main>
+      <button class="l4jlnf" role="button"><div aria-label="Filter by Date posted">Date posted</div></button>
+      <button class="x8a2" role="button"><div aria-label="Filter by Top Match">Top Match</div></button>
+      <button class="q1random" role="button"><div aria-label="Filter by Content type">Content type</div></button>
+      <button class="hash-changes" role="button"><div aria-label="Filter by From member">From member</div></button>
+      <button class="unrelated-hash" role="button" aria-label="Filter by Posts" aria-pressed="true">Posts</button>
+      <button role="button">All filters</button>
+      <button role="button">Reset</button>
+      <button role="button">Show results</button>
+      <div popover="manual" tabindex="-1">
+        <div role="radio" aria-label="Top Match" aria-checked="true"><span>Top Match</span></div>
+        <div role="radio" aria-label="Latest" aria-checked="false"><span>Latest</span></div>
+        <a href="?keywords=example">Show results</a>
+      </div>
+      <input data-testid="typeahead-input" placeholder="Search" aria-label="Search">
+      <div role="option">Past week</div>
+      <div role="option">Latest</div>
+      <button type="button" aria-label="Remove filter: Date posted Past week">Past week</button>
+      <button type="button" aria-label="Remove filter: Sort by Most recent">Most recent</button>
+      <button type="button" aria-label="Remove filter: Content type Videos">Videos</button>
+      <ul role="list"><li>Post results</li></ul>
+    </main>
+  </body>
+</html>

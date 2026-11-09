@@ -1,0 +1,10 @@
+{
+    "name":  "com.jobposttracker.service",
+    "description":  "Starts the Email Extension service for the extension",
+    "path":  "C:\\Live\\Email_Extension\\native-host\\publish\\JobPostTrackerHost.exe",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://hcphmgjomjejpfhfaijagjhmcccoemcj/",
+                            "chrome-extension://gcobpofggbbgjffgdeghgijplelafihn/"
+                        ]
+}
