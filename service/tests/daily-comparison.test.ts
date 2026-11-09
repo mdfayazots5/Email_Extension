@@ -146,8 +146,11 @@ describe("daily master comparison", () => {
     expect(saved.getWorksheet("2026-10-25")?.getRow(1).values).toEqual([
       ,
       "Unique Emails for this Day",
-      "Not in Reference CSV"
+      "Not in Reference CSV",
+      "Country (column A)",
+      "Country (column B)"
     ]);
+    expect(saved.getWorksheet("2026-10-25")?.getCell("C2").value).toBe("United Kingdom");
     expect(saved.getWorksheet("2026-10-25")?.getCell("A2").value).toBe("one@example.com");
     expect(saved.getWorksheet("2026-10-25")?.getCell("B2").value).toBe("one@example.com");
     expect(saved.getWorksheet("Notes")?.getCell("A1").value).toBe("keep this");

@@ -1,12 +1,8 @@
 import type { QueryRecord } from "../api/types";
-
-const countryNames = new Intl.DisplayNames(["en"], { type: "region" });
+import { countryName } from "../../../shared/country-names";
 
 export function countryLabel(countryCode: string): string {
-  if (countryCode.toUpperCase() === "WW") return "Worldwide";
-  // Placeholder for emails imported from the old v0.3 extension, which recorded no country.
-  if (countryCode.toUpperCase() === "XX") return "Legacy (v0.3)";
-  return countryNames.of(countryCode.toUpperCase()) ?? countryCode;
+  return countryName(countryCode) || countryCode;
 }
 
 // Codes that Intl knows but that are not countries a LinkedIn search targets.

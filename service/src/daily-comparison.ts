@@ -3,6 +3,7 @@ import path from "node:path";
 import ExcelJS from "exceljs";
 import type { DatabaseSync } from "node:sqlite";
 import { normalizeForComparison } from "../../shared/email-normalization.ts";
+import { countryName } from "../../shared/country-names.ts";
 
 export type DailyCapture = {
   originalEmail: string;
@@ -147,13 +148,17 @@ export async function writeDailyWorkbook(
   sheet.spliceRows(1, sheet.rowCount);
   sheet.getCell("A1").value = "Unique Emails for this Day";
   sheet.getCell("B1").value = "Not in Reference CSV";
+  sheet.getCell("C1").value = "Country (column A)";
+  sheet.getCell("D1").value = "Country (column B)";
   const allEmails = [...currentEmails].sort((a, b) => a.ordinal - b.ordinal);
   const newEmails = allEmails.filter((email) => email.isNew);
   for (let index = 0; index < allEmails.length; index++) {
     sheet.getCell(index + 2, 1).value = allEmails[index].originalEmail;
+    sheet.getCell(index + 2, 3).value = countryName(allEmails[index].countryCode);
   }
   for (let index = 0; index < newEmails.length; index++) {
     sheet.getCell(index + 2, 2).value = newEmails[index].originalEmail;
+    sheet.getCell(index + 2, 4).value = countryName(newEmails[index].countryCode);
   }
 
   const model = workbook.model;
@@ -213,7 +218,8 @@ function isMissingFile(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
-export function dailyCsv(emails: Array<{ original_email: string }>): string {
+export function dailyCsv(emails: Array<{ original_email: string; country_code?: string | null; city?: string | null }>): string {
   const escape = (value: string) => /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
-  return `\uFEFFEmail\r\n${emails.map((email) => escape(email.original_email)).join("\r\n")}`;
+  const lines = emails.map((email) => [email.original_email, countryName(email.country_code), email.city ?? ""].map(escape).join(","));
+  return `\uFEFFEmail,Country,City\r\n${lines.join("\r\n")}`;
 }

@@ -11,6 +11,7 @@ import { dailyCsv, recomputeDailyComparison, writeDailyComparison } from "./dail
 import { importMasterFile, masterStatus } from "./master-import.js";
 import { normalizeForComparison } from "../../shared/email-normalization.ts";
 import { DEFAULT_JOB_WORDS } from "../../shared/post-defaults.ts";
+import { countryFilePart, countryName } from "../../shared/country-names.ts";
 import {
   emailBatchInput,
   exportQuery,
@@ -101,15 +102,17 @@ function readAppSettings(db: DatabaseSync, timezone: string) {
       : Number(values.data_retention_days),
     action_delay_min_ms: Number(values.action_delay_min_ms ?? 1500),
     action_delay_max_ms: Number(values.action_delay_max_ms ?? 3000),
-    scan_delay_min_ms: Number(values.scan_delay_min_ms ?? 2000),
-    scan_delay_max_ms: Number(values.scan_delay_max_ms ?? 4000),
-    max_scrolls_per_query: Number(values.max_scrolls_per_query ?? 50),
-    max_posts_per_query: Number(values.max_posts_per_query ?? 300),
+    scan_delay_min_ms: Number(values.scan_delay_min_ms ?? 6000),
+    scan_delay_max_ms: Number(values.scan_delay_max_ms ?? 12_000),
+    max_scrolls_per_query: Number(values.max_scrolls_per_query ?? 15),
+    max_posts_per_query: Number(values.max_posts_per_query ?? 150),
     stop_after_no_new_posts: Number(values.stop_after_no_new_posts ?? 3),
-    query_pause_min_ms: Number(values.query_pause_min_ms ?? 20_000),
-    query_pause_max_ms: Number(values.query_pause_max_ms ?? 40_000),
-    max_queries_per_run: Number(values.max_queries_per_run ?? 10),
-    max_posts_per_day: Number(values.max_posts_per_day ?? 10_000),
+    query_pause_min_ms: Number(values.query_pause_min_ms ?? 120_000),
+    query_pause_max_ms: Number(values.query_pause_max_ms ?? 300_000),
+    max_queries_per_run: Number(values.max_queries_per_run ?? 5),
+    max_posts_per_day: Number(values.max_posts_per_day ?? 600),
+    max_searches_per_day: Number(values.max_searches_per_day ?? 25),
+    rest_hours_after_warning: Number(values.rest_hours_after_warning ?? 24),
     query_retry_limit: Number(values.query_retry_limit ?? 2),
     ignore_generic_addresses: values.ignore_generic_addresses !== "0",
     ignored_email_prefixes: values.ignored_email_prefixes
@@ -303,12 +306,16 @@ export function createApp(options: AppOptions) {
 
   app.get("/export/unique-csv", (request, response) => {
     const day = dateSchema.parse(request.query.date);
+    const country = request.query.country === undefined || request.query.country === ""
+      ? undefined
+      : z.string().trim().regex(/^[A-Za-z]{2}$/).parse(request.query.country).toUpperCase();
     const rows = db.prepare(`
-      SELECT original_email FROM daily_comparison_emails
-      WHERE day = ? AND is_new = 1 ORDER BY ordinal
-    `).all(day) as Array<{ original_email: string }>;
+      SELECT original_email, country_code, city FROM daily_comparison_emails
+      WHERE day = ? AND is_new = 1${country ? " AND country_code = ?" : ""} ORDER BY ordinal
+    `).all(...(country ? [day, country] : [day])) as Array<{ original_email: string; country_code: string; city: string }>;
+    const countries = country ? [country] : rows.map((row) => row.country_code);
     response.setHeader("Content-Type", "text/csv; charset=utf-8");
-    response.setHeader("Content-Disposition", `attachment; filename="Unique-Emails-${day}.csv"`);
+    response.setHeader("Content-Disposition", `attachment; filename="Unique-Emails-${day}-${countryFilePart(countries)}.csv"`);
     response.send(dailyCsv(rows));
   });
 
@@ -345,6 +352,8 @@ export function createApp(options: AppOptions) {
     if (input.query_pause_max_ms !== undefined) values.push(["query_pause_max_ms", input.query_pause_max_ms.toString()]);
     if (input.max_queries_per_run !== undefined) values.push(["max_queries_per_run", input.max_queries_per_run.toString()]);
     if (input.max_posts_per_day !== undefined) values.push(["max_posts_per_day", input.max_posts_per_day.toString()]);
+    if (input.max_searches_per_day !== undefined) values.push(["max_searches_per_day", input.max_searches_per_day.toString()]);
+    if (input.rest_hours_after_warning !== undefined) values.push(["rest_hours_after_warning", input.rest_hours_after_warning.toString()]);
     if (input.query_retry_limit !== undefined) values.push(["query_retry_limit", input.query_retry_limit.toString()]);
     if (input.ignore_generic_addresses !== undefined) values.push(["ignore_generic_addresses", input.ignore_generic_addresses ? "1" : "0"]);
     if (input.exclude_earlier_emails !== undefined) values.push(["exclude_earlier_emails", input.exclude_earlier_emails ? "1" : "0"]);
@@ -364,8 +373,8 @@ export function createApp(options: AppOptions) {
       jsonError(response, 400, "Invalid action delay", [{ path: ["action_delay_max_ms"], message: "Maximum delay must be at least the minimum delay" }]);
       return;
     }
-    const currentScanMin = Number((db.prepare("SELECT value FROM settings WHERE key = 'scan_delay_min_ms'").get() as { value: string } | undefined)?.value ?? 2000);
-    const currentScanMax = Number((db.prepare("SELECT value FROM settings WHERE key = 'scan_delay_max_ms'").get() as { value: string } | undefined)?.value ?? 4000);
+    const currentScanMin = Number((db.prepare("SELECT value FROM settings WHERE key = 'scan_delay_min_ms'").get() as { value: string } | undefined)?.value ?? 6000);
+    const currentScanMax = Number((db.prepare("SELECT value FROM settings WHERE key = 'scan_delay_max_ms'").get() as { value: string } | undefined)?.value ?? 12_000);
     const scanDelayMin = input.scan_delay_min_ms ?? currentScanMin;
     const scanDelayMax = input.scan_delay_max_ms ?? currentScanMax;
     if (scanDelayMin > scanDelayMax) {
@@ -373,9 +382,9 @@ export function createApp(options: AppOptions) {
       return;
     }
     const queryPauseMin = input.query_pause_min_ms
-      ?? Number((db.prepare("SELECT value FROM settings WHERE key = 'query_pause_min_ms'").get() as { value: string } | undefined)?.value ?? 20_000);
+      ?? Number((db.prepare("SELECT value FROM settings WHERE key = 'query_pause_min_ms'").get() as { value: string } | undefined)?.value ?? 120_000);
     const queryPauseMax = input.query_pause_max_ms
-      ?? Number((db.prepare("SELECT value FROM settings WHERE key = 'query_pause_max_ms'").get() as { value: string } | undefined)?.value ?? 40_000);
+      ?? Number((db.prepare("SELECT value FROM settings WHERE key = 'query_pause_max_ms'").get() as { value: string } | undefined)?.value ?? 300_000);
     if (queryPauseMin > queryPauseMax) {
       jsonError(response, 400, "Invalid query pause", [{ path: ["query_pause_max_ms"], message: "Maximum pause must be at least the minimum pause" }]);
       return;
@@ -902,16 +911,17 @@ export function createApp(options: AppOptions) {
         ? emailRows(db, date, country)
         : rangedEmailRows(db, start, end, country);
       const cell = format === "csv" ? csvCell : tsvCell;
-      const header = ["Email", "Country", "City", "Post link", "Post date", "Captured date"];
+      const header = ["Email", "Country", "Country code", "City", "Post link", "Post date", "Captured date"];
       const lines = [header.map((field) => cell(field)).join(format === "csv" ? "," : "\t")];
       for (const row of rows) {
         lines.push([
-          row.original_email, row.country_code, row.city, row.post_url, row.post_date, row.first_seen_day
+          row.original_email, countryName(row.country_code), row.country_code, row.city, row.post_url, row.post_date, row.first_seen_day
         ].map((field) => cell(field)).join(format === "csv" ? "," : "\t"));
       }
+      const countries = country ? [country] : rows.map((row) => row.country_code);
       response
         .type(format === "csv" ? "text/csv; charset=utf-8" : "text/tab-separated-values; charset=utf-8")
-        .setHeader("Content-Disposition", `attachment; filename="tracker-${period}-${date}.${format}"`)
+        .setHeader("Content-Disposition", `attachment; filename="tracker-${period}-${date}-${countryFilePart(countries)}.${format}"`)
         .send(`${format === "csv" ? "\uFEFF" : ""}${lines.join("\r\n")}`);
     });
   }

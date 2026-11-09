@@ -5,9 +5,12 @@ import { Modal } from "./src/components/Modal";
 import { SetupScreen } from "./src/components/SetupScreen";
 import { ErrorBoundary } from "./src/components/ErrorBoundary";
 import { ConnectionLogControls } from "./src/components/ConnectionLogControls";
+import { ActivityLogControls } from "./src/components/ActivityLogControls";
+import { ACCOUNT_GUARD_KEY, clearLastWarning, readAccountGuard, type AccountGuard } from "./src/api/activity-log";
 import { buildLinkedInSearchUrl, summarizeFilterParams } from "./src/search/search-url";
 import { checkRule, evaluatePost } from "./src/search/post-rule";
 import { DEFAULT_JOB_WORDS } from "../shared/post-defaults";
+import { countryFilePart } from "../shared/country-names";
 import { countryQueries } from "./src/search/query-chain";
 import { recordConnectionLog } from "./src/api/connection-logs";
 import { countryLabel, countryOptions, displayTimezone, formatDisplayDate, historyPeriodLabel, shortProfileId } from "./src/ui/display";
@@ -35,15 +38,17 @@ const defaultSettings: AppSettings = {
   data_retention_days: null,
   action_delay_min_ms: 1500,
   action_delay_max_ms: 3000,
-  scan_delay_min_ms: 2000,
-  scan_delay_max_ms: 4000,
-  max_scrolls_per_query: 50,
-  max_posts_per_query: 300,
+  scan_delay_min_ms: 6000,
+  scan_delay_max_ms: 12_000,
+  max_scrolls_per_query: 15,
+  max_posts_per_query: 150,
   stop_after_no_new_posts: 3,
-  query_pause_min_ms: 20_000,
-  query_pause_max_ms: 40_000,
-  max_queries_per_run: 10,
-  max_posts_per_day: 10_000,
+  query_pause_min_ms: 120_000,
+  query_pause_max_ms: 300_000,
+  max_queries_per_run: 5,
+  max_posts_per_day: 600,
+  max_searches_per_day: 25,
+  rest_hours_after_warning: 24,
   query_retry_limit: 2,
   ignore_generic_addresses: true,
   ignored_email_prefixes: ["noreply", "no-reply", "donotreply"],
@@ -122,6 +127,7 @@ const SETTINGS_SECTIONS = [
   { id: "general", icon: "gear", title: "General", hint: "Profile, start record, timezone" },
   { id: "collecting", icon: "filter", title: "Collecting", hint: "Which posts and emails are saved" },
   { id: "limits", icon: "gauge", title: "Speed & limits", hint: "Scrolling, delays, safety caps" },
+  { id: "activity", icon: "clock", title: "Activity log", hint: "Daily LinkedIn activity, download" },
   { id: "data", icon: "database", title: "Data", hint: "Master list and data file" },
   { id: "advanced", icon: "flask", title: "Advanced", hint: "Troubleshooting options" }
 ] as const;
@@ -263,6 +269,20 @@ export default function App() {
   const [queryCountry, setQueryCountry] = useState("");
   const [querySearch, setQuerySearch] = useState("");
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>("general");
+  const [accountGuard, setAccountGuard] = useState<AccountGuard | null>(null);
+  useEffect(() => {
+    const load = () => void readAccountGuard().then(setAccountGuard).catch(() => undefined);
+    load();
+    const listener = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === "local" && changes[ACCOUNT_GUARD_KEY]) load();
+    };
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, []);
+  const restUntil = accountGuard?.lastWarningAt && settings.rest_hours_after_warning > 0
+    ? Date.parse(accountGuard.lastWarningAt) + settings.rest_hours_after_warning * 3_600_000
+    : null;
+  const resting = restUntil !== null && restUntil > Date.now();
   const [rulePostSample, setRulePostSample] = useState("");
   const [ruleTestRecordId, setRuleTestRecordId] = useState<number | "">("");
   const [jobWordsText, setJobWordsText] = useState("");
@@ -594,14 +614,17 @@ export default function App() {
     || !isValidTimezone(settings.timezone);
   const riskierSettings = settings.action_delay_min_ms < 1500
     || settings.action_delay_max_ms < 3000
-    || settings.scan_delay_min_ms < 2000
-    || settings.scan_delay_max_ms < 4000
-    || settings.query_pause_min_ms < 20_000
-    || settings.query_pause_max_ms < 40_000
-    || settings.max_queries_per_run > 10
-    || settings.max_posts_per_day > 10_000
-    || settings.max_posts_per_query > 300
-    || settings.max_scrolls_per_query > 50
+    || settings.scan_delay_min_ms < 5000
+    || settings.scan_delay_max_ms < 10_000
+    || settings.query_pause_min_ms < 90_000
+    || settings.query_pause_max_ms < 180_000
+    || settings.max_queries_per_run > 5
+    || settings.max_posts_per_day > 1000
+    || settings.max_posts_per_query > 200
+    || settings.max_scrolls_per_query > 20
+    || settings.max_searches_per_day === 0
+    || settings.max_searches_per_day > 40
+    || settings.rest_hours_after_warning < 24
     || settings.query_retry_limit > 2;
 
   const connectedAndRefresh = async () => {
@@ -638,7 +661,7 @@ export default function App() {
         setNotice(period === "day" && date === summary?.date ? "Today's results copied." : `${period[0].toUpperCase()}${period.slice(1)} results copied.`);
       } else {
         const excelCsv = result.startsWith("\uFEFF") ? result : `\uFEFF${result}`;
-        saveDownload(`tracker-${period}-${date}.csv`, excelCsv, "text/csv;charset=utf-8");
+        saveDownload(`tracker-${period}-${date}-${countryFilePart(country ? [country] : [])}.csv`, excelCsv, "text/csv;charset=utf-8");
         setNotice("CSV downloaded.");
       }
     } catch (error) {
@@ -694,7 +717,8 @@ export default function App() {
     const date = dailyComparison?.date ?? summary?.date ?? todayString();
     try {
       const csv = await api.uniqueCsv(date);
-      saveDownload(`Unique-Emails-${date}.csv`, csv, "text/csv;charset=utf-8");
+      const countries = (dailyComparison?.emails ?? []).map((email) => email.country_code);
+      saveDownload(`Unique-Emails-${date}-${countryFilePart(countries)}.csv`, csv, "text/csv;charset=utf-8");
       setNotice("Today's new-email CSV downloaded.");
     } catch (error) {
       setServiceError(formatError(error));
@@ -710,10 +734,10 @@ export default function App() {
     }
   };
 
-  const downloadHistoryDay = async (date: string) => {
+  const downloadHistoryDay = async (date: string, country: string) => {
     try {
-      saveDownload(`Unique-Emails-${date}.csv`, await api.uniqueCsv(date), "text/csv;charset=utf-8");
-      setNotice(`CSV for ${date} downloaded.`);
+      saveDownload(`Unique-Emails-${date}-${countryFilePart([country])}.csv`, await api.uniqueCsv(date, country), "text/csv;charset=utf-8");
+      setNotice(`CSV for ${countryLabel(country)} on ${date} downloaded.`);
     } catch (error) {
       setServiceError(formatError(error));
     }
@@ -963,6 +987,7 @@ export default function App() {
         queryPauseMaxMs: settings.query_pause_max_ms,
         maxQueriesPerRun: settings.max_queries_per_run,
         maxPostsPerDay: settings.max_posts_per_day,
+        maxSearchesPerDay: settings.max_searches_per_day,
         dailyPostsScanned: summary?.posts_scanned ?? 0,
         currentQueryRetries: 0,
         waitingForNextQuery: false,
@@ -1338,8 +1363,8 @@ export default function App() {
                   <div><h2>Query records <span className="count-badge">{queries.length}</span></h2><p className="muted">Filters are saved with each record for later use.</p></div>
                   <div className="button-row">
                     <button className="button button--secondary button--small" type="button" onClick={() => {
-                      const data = ["country_code,label,query_text,enabled,notes", ...orderedQueries.map((item) => [item.country_code, item.label, item.query_text, Boolean(item.enabled), item.notes].map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))].join("\r\n");
-                      saveDownload("job-post-queries.csv", data, "text/csv;charset=utf-8");
+                      const data = ["country_code,country,label,query_text,enabled,notes", ...orderedQueries.map((item) => [item.country_code, countryLabel(item.country_code), item.label, item.query_text, Boolean(item.enabled), item.notes].map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))].join("\r\n");
+                      saveDownload(`job-post-queries-${countryFilePart(orderedQueries.map((item) => item.country_code))}.csv`, data, "text/csv;charset=utf-8");
                     }}>Export</button>
                     <button className="button button--secondary button--small" type="button" onClick={() => setImportOpen(true)}>Import</button>
                     <button className="button button--primary button--small" type="button" onClick={() => openEditor(null)}>＋ Add country</button>
@@ -1477,7 +1502,7 @@ export default function App() {
                     </Panel>
                     <Panel id="history-days" className="table-card" title="Day by day" summary={`${dailyHistory.days.length} rows`}>
                       <div className="table-wrap"><table><thead><tr><th>Day</th><th>Country</th><th>Collected</th><th>Already in master</th><th>New</th><th>Export</th></tr></thead><tbody>
-                        {dailyHistory.days.map((row, index) => <tr key={`${row.day}-${row.country_code}-${index}`}><td>{formatDisplayDate(row.day)}</td><td>{countryLabel(row.country_code)}</td><td className="number-cell">{row.collected}</td><td className="number-cell">{row.already_in_master}</td><td className="number-cell">{row.new}</td><td><button className="button button--secondary button--small" type="button" disabled={!row.new} onClick={() => void downloadHistoryDay(row.day)}>Download CSV</button></td></tr>)}
+                        {dailyHistory.days.map((row, index) => <tr key={`${row.day}-${row.country_code}-${index}`}><td>{formatDisplayDate(row.day)}</td><td>{countryLabel(row.country_code)}</td><td className="number-cell">{row.collected}</td><td className="number-cell">{row.already_in_master}</td><td className="number-cell">{row.new}</td><td><button className="button button--secondary button--small" type="button" disabled={!row.new} onClick={() => void downloadHistoryDay(row.day, row.country_code)}>Download CSV</button></td></tr>)}
                       </tbody></table></div>
                     </Panel>
                   </>
@@ -1649,16 +1674,38 @@ export default function App() {
                     <>
                       {riskierSettings && <p className="alert alert--warning" role="alert">Some delays are below the recommended minimums or limits are above the recommended maximums. This can increase the chance of LinkedIn account restrictions.</p>}
                       <section className="sx-card">
+                        <header className="sx-card-head"><h2>Account health</h2><p className="muted">LinkedIn limits how many searches one account makes. The warning “unusual search traffic” is about searches, so the number of searches per day and how close together they are matters most. Searches you run by hand count too.</p></header>
+                        <div className="sx-fields sx-fields--three">
+                          <label className="field"><span>Searches per day</span><input type="number" min="0" max="500" value={settings.max_searches_per_day} onChange={(event) => setSettings({ ...settings, max_searches_per_day: Number(event.target.value) })} /><small>Records the extension opens per day in this Chrome profile, retries included. Recommended ≤ 25. 0 = no limit.</small></label>
+                          <label className="field"><span>Rest after a LinkedIn warning (hours)</span><input type="number" min="0" max="168" value={settings.rest_hours_after_warning} onChange={(event) => setSettings({ ...settings, rest_hours_after_warning: Number(event.target.value) })} /><small>Start stays blocked this long after a security check, captcha or “unusual traffic” notice. Recommended ≥ 24.</small></label>
+                          <div className="field">
+                            <span>Today in this profile</span>
+                            <strong>{accountGuard?.searches ?? 0}{settings.max_searches_per_day ? ` of ${settings.max_searches_per_day}` : ""} searches</strong>
+                            <small>
+                              {accountGuard?.lastWarningAt
+                                ? <>Last warning {new Date(accountGuard.lastWarningAt).toLocaleString()}.{resting && restUntil ? ` Resting until ${new Date(restUntil).toLocaleString()}.` : ""}</>
+                                : "No LinkedIn warning recorded."}
+                            </small>
+                            {accountGuard?.lastWarningAt && (
+                              <button className="button button--secondary button--small" type="button" onClick={() => {
+                                if (!window.confirm("Forget the last LinkedIn warning? Start will no longer be blocked by the rest period. Starting again soon after a warning makes a restriction more likely.")) return;
+                                void clearLastWarning().catch((error: unknown) => setServiceError(formatError(error)));
+                              }}>{resting ? "End rest now" : "Forget warning"}</button>
+                            )}
+                          </div>
+                        </div>
+                      </section>
+                      <section className="sx-card">
                         <header className="sx-card-head"><h2>Scrolling</h2><p className="muted">How far down the LinkedIn results each record is scanned. A record stops at whichever limit it reaches first.</p></header>
                         <div className="sx-fields sx-fields--three">
-                          <label className="field"><span>Scrolls per record</span><input type="number" min="1" max="50" value={settings.max_scrolls_per_query} onChange={(event) => setSettings({ ...settings, max_scrolls_per_query: Number(event.target.value) })} /><small>1–50. More scrolls find older posts.</small></label>
+                          <label className="field"><span>Scrolls per record</span><input type="number" min="1" max="50" value={settings.max_scrolls_per_query} onChange={(event) => setSettings({ ...settings, max_scrolls_per_query: Number(event.target.value) })} /><small>1–50, recommended ≤ 15–20. With “Past week” or “Past month” most new posts are in the first screens.</small></label>
                           <label className="field"><span>Stop after scrolls with no new posts</span><input type="number" min="1" max="100" value={settings.stop_after_no_new_posts} onChange={(event) => setSettings({ ...settings, stop_after_no_new_posts: Number(event.target.value) })} /><small>Ends early when LinkedIn has no more results.</small></label>
                           <label className="field"><span>Posts per record</span><input type="number" min="1" max="10000" value={settings.max_posts_per_query} onChange={(event) => setSettings({ ...settings, max_posts_per_query: Number(event.target.value) })} /><small>Most posts scanned for one record.</small></label>
                         </div>
                         <div className="sx-delays">
                           <div className="sx-delays-head" aria-hidden="true"><span /><span>Minimum</span><span>Maximum</span></div>
                           <div className="sx-delay-row">
-                            <div><strong>Wait between scrolls</strong><small>Recommended ≥ 2 s · allowed 0–120 s</small></div>
+                            <div><strong>Wait between scrolls</strong><small>Recommended ≥ 6–12 s · allowed 0–120 s</small></div>
                             <label className="sx-unit"><input type="number" aria-label="Wait between scrolls minimum seconds" min={0} max={120} step={0.1} value={settings.scan_delay_min_ms / 1000} onChange={(event) => setSettings({ ...settings, scan_delay_min_ms: Number(event.target.value) * 1000 })} /><span>s</span></label>
                             <label className="sx-unit"><input type="number" aria-label="Wait between scrolls maximum seconds" min={0} max={120} step={0.1} value={settings.scan_delay_max_ms / 1000} onChange={(event) => setSettings({ ...settings, scan_delay_max_ms: Number(event.target.value) * 1000 })} /><span>s</span></label>
                           </div>
@@ -1670,7 +1717,7 @@ export default function App() {
                           <div className="sx-delays-head" aria-hidden="true"><span /><span>Minimum</span><span>Maximum</span></div>
                           {([
                             { title: "Filter action", hint: "Recommended ≥ 1.5 s · allowed 1.5–60 s", min: "action_delay_min_ms", max: "action_delay_max_ms", low: 1.5, high: 60, step: 0.1 },
-                            { title: "Pause between records", hint: "Recommended ≥ 20 s · allowed 0–600 s", min: "query_pause_min_ms", max: "query_pause_max_ms", low: 0, high: 600, step: 1 }
+                            { title: "Pause between records", hint: "Recommended ≥ 2–5 min · allowed 0–600 s", min: "query_pause_min_ms", max: "query_pause_max_ms", low: 0, high: 600, step: 1 }
                           ] as const).map((row) => (
                             <div className="sx-delay-row" key={row.title}>
                               <div><strong>{row.title}</strong><small>{row.hint}</small></div>
@@ -1681,7 +1728,7 @@ export default function App() {
                         </div>
                       </section>
                       <section className="sx-card">
-                        <header className="sx-card-head"><h2>Safety limits</h2><p className="muted">A run stops when it reaches any of these. Recommended: at most 10 records per run and 10,000 posts per day.</p></header>
+                        <header className="sx-card-head"><h2>Safety limits</h2><p className="muted">A run stops when it reaches any of these. Recommended: at most 5 records per run and 600 posts per day, spread over the day.</p></header>
                         <div className="sx-fields sx-fields--three">
                           <label className="field"><span>Records per run</span><input type="number" min="1" max="500" value={settings.max_queries_per_run} onChange={(event) => setSettings({ ...settings, max_queries_per_run: Number(event.target.value) })} /></label>
                           <label className="field"><span>Posts per day</span><input type="number" min="1" max="10000" value={settings.max_posts_per_day} onChange={(event) => setSettings({ ...settings, max_posts_per_day: Number(event.target.value) })} /></label>
@@ -1762,6 +1809,13 @@ export default function App() {
                         <div><dt>Restore</dt><dd>Only needed if the data file is damaged or something was deleted by mistake: close Chrome, replace <code>data\tracker.db</code> with a copy from <code>data\backups</code>, then reopen Chrome.</dd></div>
                       </dl>
                       <div className="button-row"><button className="button button--secondary" type="button" disabled={settingsBusy} onClick={() => void runBackup()}>Make a copy now</button></div>
+                    </section>
+                  )}
+
+                  {settingsSection === "activity" && (
+                    <section className="sx-card">
+                      <header className="sx-card-head"><h2>Daily activity log</h2><p className="muted">If LinkedIn ever warns or blocks this account, open that day here and use Copy or Download to see exactly how many searches and scrolls happened, and how fast, before it.</p></header>
+                      <ActivityLogControls />
                     </section>
                   )}
 

@@ -289,6 +289,13 @@ describe("storage service API", () => {
     const workbook = await api("/export/unique-xlsx");
     expect(workbook.status).toBe(200);
     expect(workbook.headers.get("content-disposition")).toContain("Unique-Emails.xlsx");
+
+    const countryCsv = await api("/export/unique-csv?date=2026-10-25&country=GB");
+    expect(countryCsv.headers.get("content-disposition")).toContain("Unique-Emails-2026-10-25-United-Kingdom.csv");
+    // fetch().text() drops the leading BOM.
+    expect(await countryCsv.text()).toBe("Email,Country,City\r\nnew@example.com,United Kingdom,London");
+    const otherCountry = await api("/export/unique-csv?date=2026-10-25&country=US");
+    expect(await otherCountry.text()).toBe("Email,Country,City\r\n");
   });
 
   it("runs versioned migrations repeatedly without errors", () => {
@@ -309,10 +316,22 @@ describe("storage service API", () => {
       { version: 10 },
       { version: 11 },
       { version: 12 },
-      { version: 13 }
+      { version: 13 },
+      { version: 14 }
     ]);
     // New installs start empty: no author-specific queries are seeded.
     expect(db.prepare("SELECT COUNT(*) AS count FROM queries").get()).toEqual({ count: 0 });
+  });
+
+  it("moves settings still at the old defaults to the slower account-health defaults", () => {
+    db.prepare("DELETE FROM migrations WHERE version = 14").run();
+    db.prepare("INSERT INTO settings(key, value) VALUES ('max_scrolls_per_query', '50'), ('query_pause_min_ms', '60000') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    db.close();
+    db = openDatabase(databasePath, "UTC");
+    const value = (key: string) => (db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string }).value;
+    expect(value("max_scrolls_per_query")).toBe("15");
+    // Changed by hand, so it is kept.
+    expect(value("query_pause_min_ms")).toBe("60000");
   });
 
   it("allows separate profiles but gives a query lock to only one at a time", async () => {
@@ -451,12 +470,14 @@ describe("storage service API", () => {
     const csvBytes = new Uint8Array(await csvResponse.arrayBuffer());
     expect([...csvBytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const csv = new TextDecoder().decode(csvBytes);
-    expect(csv).toContain("Email,Country,City,Post link,Post date,Captured date");
+    expect(csv).toContain("Email,Country,Country code,City,Post link,Post date,Captured date");
+    expect(csv).toContain("csv@example.com,United Kingdom,GB,");
+    expect(csvResponse.headers.get("content-disposition")).toContain("-United-Kingdom.csv");
     expect(csv).toContain('"London, South\nWest"');
     const tsvResponse = await api(`/export/tsv?date=${today.date}`);
     const tsv = await tsvResponse.text();
-    expect(tsv.split("\r\n")[0]).toBe("Email\tCountry\tCity\tPost link\tPost date\tCaptured date");
-    expect(tsv).toContain("csv@example.com\tGB\tLondon, South West");
+    expect(tsv.split("\r\n")[0]).toBe("Email\tCountry\tCountry code\tCity\tPost link\tPost date\tCaptured date");
+    expect(tsv).toContain("csv@example.com\tUnited Kingdom\tGB\tLondon, South West");
   });
 
   it("rejects missing and invalid tokens with 401", async () => {
@@ -483,8 +504,10 @@ describe("storage service API", () => {
   });
 
   it("stores service settings and validates IANA timezone values", async () => {
-    const defaults = await (await api("/settings")).json() as { max_scrolls_per_query: number };
-    expect(defaults.max_scrolls_per_query).toBe(50);
+    const defaults = await (await api("/settings")).json() as { max_scrolls_per_query: number; max_searches_per_day: number; rest_hours_after_warning: number };
+    expect(defaults.max_scrolls_per_query).toBe(15);
+    expect(defaults.max_searches_per_day).toBe(25);
+    expect(defaults.rest_hours_after_warning).toBe(24);
     const saved = await api("/settings", {
       method: "PUT",
       body: JSON.stringify({

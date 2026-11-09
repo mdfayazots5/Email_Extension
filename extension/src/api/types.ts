@@ -104,6 +104,10 @@ export type AppSettings = {
   query_pause_max_ms: number;
   max_queries_per_run: number;
   max_posts_per_day: number;
+  /** Searches (records) the extension may open per day in one Chrome profile; 0 = no limit. */
+  max_searches_per_day: number;
+  /** Hours Start stays blocked after LinkedIn shows a warning; 0 = no rest. */
+  rest_hours_after_warning: number;
   query_retry_limit: number;
   ignore_generic_addresses: boolean;
   ignored_email_prefixes: string[];
@@ -206,6 +210,7 @@ export type SearchRunState = {
   queryPauseMaxMs: number;
   maxQueriesPerRun: number;
   maxPostsPerDay: number;
+  maxSearchesPerDay?: number;
   dailyPostsScanned: number;
   currentQueryRetries: number;
   waitingForNextQuery: boolean;

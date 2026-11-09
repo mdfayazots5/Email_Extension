@@ -127,6 +127,8 @@ export const settingsUpdate = z.object({
   query_pause_max_ms: z.number().int().min(0).max(600000).optional(),
   max_queries_per_run: z.number().int().min(1).max(500).optional(),
   max_posts_per_day: z.number().int().min(1).max(10000).optional(),
+  max_searches_per_day: z.number().int().min(0).max(500).optional(),
+  rest_hours_after_warning: z.number().int().min(0).max(168).optional(),
   query_retry_limit: z.number().int().min(0).max(10).optional(),
   ignore_generic_addresses: z.boolean().optional(),
   ignored_email_prefixes: z.array(z.string().trim().min(1).max(40)).max(30).optional(),

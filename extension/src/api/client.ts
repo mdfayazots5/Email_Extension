@@ -248,8 +248,10 @@ export class TrackerApi {
     return this.request<Blob>("/export/unique-xlsx");
   }
 
-  uniqueCsv(date: string) {
-    return this.request<string>(`/export/unique-csv?date=${encodeURIComponent(date)}`);
+  uniqueCsv(date: string, country?: string) {
+    const params = new URLSearchParams({ date });
+    if (country) params.set("country", country);
+    return this.request<string>(`/export/unique-csv?${params}`);
   }
 
   queries() {

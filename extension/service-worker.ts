@@ -7,6 +7,7 @@ import { retryTransientSave, saveBatchWithSafetyCopy } from "./src/search/safe-b
 import { countryQueries, nextChainQuery, orderedEnabledQueries, reachedDailyPostLimit, shouldRetryQuery } from "./src/search/query-chain";
 import { countryLabel } from "./src/ui/display";
 import { isStorableEmail, repairEmailLocalPart } from "../shared/email-normalization";
+import { readAccountGuard, recordActivityEvent, recordRunActivity, startBlockReason } from "./src/api/activity-log";
 
 type StartMessage = {
   type: "START_SEARCH";
@@ -229,7 +230,10 @@ async function patchRun(run: SearchRunState, ended = false): Promise<void> {
 const activeRunStatuses: ReadonlyArray<SearchRunState["status"]> = ["running", "paused", "awaiting_filters", "country_completed"];
 
 async function publish(run: SearchRunState): Promise<void> {
+  const previous = (await chrome.storage.local.get(RUN_STORAGE_KEY))[RUN_STORAGE_KEY] as SearchRunState | undefined;
   await storeRun(run);
+  // Daily activity log + account guard (searches today, last LinkedIn warning). Never throws.
+  await recordRunActivity(previous ?? null, run);
   if (activeRunStatuses.includes(run.status)) {
     // Keep the on-page/popup selection on the record the chain is actually working on,
     // so it survives page reloads and a later error instead of reverting to the start record.
@@ -338,7 +342,26 @@ async function openSearch(run: SearchRunState): Promise<void> {
   }
 }
 
+/** Rest period after a LinkedIn warning, or daily search limit. Logged when it blocks a start. */
+async function accountStartBlock(settings: { max_searches_per_day?: number; rest_hours_after_warning?: number }): Promise<string | null> {
+  const reason = startBlockReason(await readAccountGuard(), {
+    maxSearchesPerDay: settings.max_searches_per_day ?? 25,
+    restHoursAfterWarning: settings.rest_hours_after_warning ?? 24
+  });
+  if (reason) await recordActivityEvent("start_blocked", reason);
+  return reason;
+}
+
 async function handleStart(message: StartMessage): Promise<{ ok: boolean; error?: string }> {
+  const blocked = await accountStartBlock(await api.settings());
+  if (blocked) {
+    await serviceFetch(`/runs/${message.run.runId}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "error", ended_at: new Date().toISOString(), progress_json: { stage: "error", statusText: blocked } })
+    }).catch(() => undefined);
+    return { ok: false, error: blocked };
+  }
   const previous = await readRun();
   if (previous && ["running", "paused", "awaiting_filters", "country_completed"].includes(previous.status)) {
     const messageText = "Another search run is already active. Pause or stop it before starting a new one.";
@@ -411,6 +434,8 @@ async function handlePopupStart(
     ?? ordered.find((query) => query.country_code === settings.starting_country)
     ?? ordered[0];
   if (!selected) return { ok: false, error: "No enabled saved queries. Add or enable one in the tracker first." };
+  const blocked = await accountStartBlock(settings);
+  if (blocked) return { ok: false, error: blocked };
   const filters = {
     date_posted: selected.date_posted ?? "any",
     sort_by: selected.sort_by ?? "relevance",
@@ -476,6 +501,7 @@ async function handlePopupStart(
     queryPauseMaxMs: settings.query_pause_max_ms,
     maxQueriesPerRun: settings.max_queries_per_run,
     maxPostsPerDay: settings.max_posts_per_day,
+    maxSearchesPerDay: settings.max_searches_per_day,
     dailyPostsScanned: today.posts_scanned,
     currentQueryRetries: 0,
     waitingForNextQuery: false,
@@ -862,6 +888,11 @@ async function advanceChain(runId: number): Promise<void> {
     }
     if (run.queriesAttempted >= run.maxQueriesPerRun) {
       await finishRun(run, "completed", `Run safety limit reached (${run.maxQueriesPerRun} queries).`);
+      return;
+    }
+    const searchesToday = (await readAccountGuard()).searches;
+    if (run.maxSearchesPerDay && searchesToday >= run.maxSearchesPerDay) {
+      await finishRun(run, "completed", `Daily search limit reached (${searchesToday} of ${run.maxSearchesPerDay}).`);
       return;
     }
     run.waitingForNextQuery = true;
@@ -1464,7 +1495,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }).catch((error: unknown) => console.error("Unable to resume filter setup:", error));
 });
 
+// Count every LinkedIn search results page this profile loads (manual searches included),
+// because that total is what LinkedIn sees. Same URL within 10 s counts once.
+const lastSearchLoad = new Map<number, { url: string; at: number }>();
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  const url = changeInfo.url ?? (changeInfo.status === "complete" ? tab.url : undefined);
+  if (!url || !url.startsWith("https://www.linkedin.com/search/results/")) return;
+  const previous = lastSearchLoad.get(tabId);
+  const now = Date.now();
+  if (previous && previous.url === url && now - previous.at < 10_000) return;
+  lastSearchLoad.set(tabId, { url, at: now });
+  const kind = new URL(url).pathname.split("/")[3] || "search";
+  void recordActivityEvent("page_load", `LinkedIn ${kind} search page`, { pageLoads: 1 });
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  lastSearchLoad.delete(tabId);
   void readRun().then(async (run) => {
     if (!run || run.tabId !== tabId || !["running", "awaiting_filters"].includes(run.status)) return;
     run.status = "paused";

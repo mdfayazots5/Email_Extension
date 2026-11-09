@@ -279,5 +279,23 @@ export const migrations: Migration[] = [
     apply() {
       // Intentionally empty.
     }
+  },
+  {
+    version: 14,
+    // Account-health defaults: settings still at the old defaults move to slower values.
+    // Values the user changed by hand are left alone.
+    apply(db) {
+      const update = db.prepare("UPDATE settings SET value = ? WHERE key = ? AND value = ?");
+      for (const [key, oldValue, newValue] of [
+        ["scan_delay_min_ms", "2000", "6000"],
+        ["scan_delay_max_ms", "4000", "12000"],
+        ["max_scrolls_per_query", "50", "15"],
+        ["max_posts_per_query", "300", "150"],
+        ["query_pause_min_ms", "20000", "120000"],
+        ["query_pause_max_ms", "40000", "300000"],
+        ["max_queries_per_run", "10", "5"],
+        ["max_posts_per_day", "10000", "600"]
+      ]) update.run(newValue, key, oldValue);
+    }
   }
 ];
