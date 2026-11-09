@@ -1,4 +1,4 @@
-import { normalizeForComparison } from "../../../shared/email-normalization";
+import { isStorableEmail, normalizeForComparison, repairEmailLocalPart } from "../../../shared/email-normalization";
 
 export type ExtractedEmail = { original: string; normalized: string };
 
@@ -48,8 +48,8 @@ export function extractEmails(text: string): ExtractedEmail[] {
   const found = new Map<string, ExtractedEmail>();
   for (const match of matches) {
     const original = trimPunctuation(match[0]);
-    const normalized = normalizeForComparison(normalizeObfuscated(original).replace(/\s+/g, ""));
-    if (!validEmail(normalized) || found.has(normalized)) continue;
+    const normalized = repairEmailLocalPart(normalizeForComparison(normalizeObfuscated(original).replace(/\s+/g, "")));
+    if (!validEmail(normalized) || !isStorableEmail(normalized) || found.has(normalized)) continue;
     found.set(normalized, { original, normalized });
   }
   return [...found.values()];

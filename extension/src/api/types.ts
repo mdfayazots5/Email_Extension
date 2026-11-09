@@ -168,6 +168,8 @@ export type SearchRunState = {
   queryId: number;
   queryText: string;
   continueNext: boolean;
+  /** Keep going through every country (after the start record) with the same captured filters. */
+  runAllCountries?: boolean;
   status: "running" | "paused" | "awaiting_filters" | "country_completed" | "stopped" | "error" | "query_completed" | "completed";
   stage: "opening" | "awaiting_filters" | "applying" | "ready" | "scanning" | "error" | "stopped" | "completed";
   statusText: string;

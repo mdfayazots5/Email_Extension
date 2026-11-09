@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { extractEmails, isGenericEmail, relativeDateToISO } from "./extraction";
+import { isStorableEmail } from "../../../shared/email-normalization";
 
 describe("email extraction", () => {
   it("extracts valid, uppercase, punctuated and multiple addresses", () => {
@@ -15,6 +17,19 @@ describe("email extraction", () => {
       { original: "two(at)example.org", normalized: "two@example.org" }
     ]);
     expect(extractEmails("Contact Jane Smith for details")).toEqual([]);
+  });
+
+  it("only returns addresses the service accepts, repairing glued prefixes", () => {
+    expect(extractEmails("Email/hr@acme.com or send to jobs@acme.com2025 and o'brien@acme.io").map(({ normalized }) => normalized))
+      .toEqual(["hr@acme.com", "o'brien@acme.io"]);
+    expect(extractEmails("weird#name@acme.com").map(({ normalized }) => normalized)).toEqual(["name@acme.com"]);
+  });
+
+  it("agrees with the service's email validation", () => {
+    const samples = ["a@b.co", "first.last@sub.example.com", "x+tag@acme.io", "bad/x@acme.com", "x@acme.c0m", "x@1.2.3.4", "a!b@acme.com", "x.@acme.com", "o'brien@acme.io"];
+    for (const sample of samples) {
+      expect(isStorableEmail(sample), sample).toBe(z.string().email().safeParse(sample).success);
+    }
   });
 
   it("rejects malformed addresses and identifies generic prefixes only", () => {

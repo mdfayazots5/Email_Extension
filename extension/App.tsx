@@ -64,6 +64,19 @@ const emptyCounters = (): SearchRunState["counters"] => ({
   queryStatus: "pending"
 });
 
+function runStatusLabel(status: SearchRunState["status"] | undefined): string {
+  switch (status) {
+    case "running": return "Running";
+    case "paused": return "Paused";
+    case "awaiting_filters": return "Set filters";
+    case "country_completed": return "Country done";
+    case "error": return "Needs attention";
+    case "completed": return "Finished";
+    case "stopped": return "Stopped";
+    default: return "Ready";
+  }
+}
+
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong. Please try again.";
 }
@@ -234,6 +247,7 @@ export default function App() {
   const [selectedQuery, setSelectedQuery] = useState<number | "">("");
   const [selectedCountry, setSelectedCountry] = useState("");
   const [continueNext, setContinueNext] = useState(true);
+  const [runAllCountries, setRunAllCountries] = useState(false);
   const [debugFilters, setDebugFilters] = useState(false);
   const [debugScan, setDebugScan] = useState(false);
   const [continueOnFilterFailure, setContinueOnFilterFailure] = useState(false);
@@ -288,6 +302,7 @@ export default function App() {
       const localPreferences = await chrome.storage.local.get([
         "selectedQueryId",
         "continueNext",
+        "runAllCountries",
         "debugFilters",
         "debugScan",
         "continueOnFilterFailure",
@@ -316,6 +331,7 @@ export default function App() {
           ?? "";
       });
       if (typeof localPreferences.continueNext === "boolean") setContinueNext(localPreferences.continueNext);
+      setRunAllCountries(localPreferences.runAllCountries === true);
       setDebugFilters(localPreferences.debugFilters === true);
       setDebugScan(localPreferences.debugScan === true);
       setContinueOnFilterFailure(localPreferences.continueOnFilterFailure === true);
@@ -902,8 +918,8 @@ export default function App() {
       const statusText = experimentalAutomaticFilters ? "Opening search" : `Set filters for ${startingRecord.country_code}`;
       const response = await api.createRun({
         current_query_id: startingRecord.id,
-        continue_next: continueNext,
-        progress_json: { stage, statusText, queryText: startingRecord.query_text, searchUrl, filters },
+        continue_next: continueNext || runAllCountries,
+        progress_json: { stage, statusText, queryText: startingRecord.query_text, searchUrl, filters, runAllCountries },
         profile_label: profileLabel,
         profile_id: profileId
       });
@@ -912,7 +928,8 @@ export default function App() {
         runId: response.id,
         queryId: startingRecord.id,
         queryText: startingRecord.query_text,
-        continueNext,
+        continueNext: continueNext || runAllCountries,
+        runAllCountries,
         status,
         stage,
         statusText,
@@ -1139,11 +1156,11 @@ export default function App() {
 
             {page === "view" && (
               <>
-                <section className="metrics-grid" aria-label="Search progress">
-                  <article className="metric-card card"><span className="metric-icon metric-icon--blue">⌕</span><span className="metric-label">Total records</span><strong>{queries.length}</strong><small>Saved search records</small></article>
-                  <article className="metric-card card"><span className="metric-icon metric-icon--green">✓</span><span className="metric-label">Completed</span><strong>{searchRun?.queryResults.filter((result) => result.status === "completed").length ?? 0}</strong><small>In this run</small></article>
-                  <article className="metric-card card"><span className="metric-icon metric-icon--amber">◷</span><span className="metric-label">Remaining</span><strong>{Math.max(0, enabledQueries.length - (searchRun?.queryResults.length ?? 0))}</strong><small>Enabled records</small></article>
-                  <article className="metric-card card"><span className="metric-icon metric-icon--purple">▤</span><span className="metric-label">Completed today</span><strong>{summary?.queries_completed ?? 0}</strong><small>Search records today</small></article>
+                <section className="metrics-grid" aria-label="Today at a glance">
+                  <article className="metric-card card"><span className="metric-icon metric-icon--green">✓</span><span className="metric-label">New emails today</span><strong>{dailyComparison?.new ?? "—"}</strong><small>Not in your master list</small></article>
+                  <article className="metric-card card"><span className="metric-icon metric-icon--blue">@</span><span className="metric-label">Collected today</span><strong>{dailyComparison?.collected ?? "—"}</strong><small>{dailyComparison ? `${dailyComparison.already_in_master} already in master` : "Comparing with master…"}</small></article>
+                  <article className="metric-card card"><span className="metric-icon metric-icon--amber">◷</span><span className="metric-label">Run status</span><strong>{runStatusLabel(searchRun?.status)}</strong><small>{searchRun && searchRun.status !== "completed" && searchRun.status !== "stopped" ? `${countryLabel(searchRun.countryCode)} · ${searchRun.cityLabel}${searchRun.runAllCountries ? " · All countries" : ""}` : linkedinTabFound ? "LinkedIn tab open" : "Open a LinkedIn tab to start"}</small></article>
+                  <article className="metric-card card"><span className="metric-icon metric-icon--purple">▤</span><span className="metric-label">Records searched today</span><strong>{summary?.queries_completed ?? 0}</strong><small>{(summary?.posts_scanned ?? 0).toLocaleString()} posts scanned</small></article>
                 </section>
 
                 <Panel
@@ -1179,11 +1196,18 @@ export default function App() {
                       <button type="button" className="inline-link" disabled={!selectedRecord || isRunActive} onClick={() => void startSearch(selectedRecord)}>Recapture</button>
                     </div>
                     <label className="checkbox-field">
-                      <input type="checkbox" checked={continueNext} onChange={(event) => {
+                      <input type="checkbox" checked={runAllCountries} onChange={(event) => {
+                        setRunAllCountries(event.target.checked);
+                        void chrome.storage.local.set({ runAllCountries: event.target.checked });
+                      }} disabled={isRunActive} />
+                      <span>Run all countries</span><small>Starts at the selected record and runs every remaining record in every country, one by one, with the filters you set on the first record. No pause between countries.</small>
+                    </label>
+                    <label className="checkbox-field">
+                      <input type="checkbox" checked={continueNext || runAllCountries} onChange={(event) => {
                         setContinueNext(event.target.checked);
                         void chrome.storage.local.set({ continueNext: event.target.checked });
-                      }} disabled={isRunActive} />
-                      <span>Continue through this country&apos;s records</span><small>The run pauses when this country is finished.</small>
+                      }} disabled={isRunActive || runAllCountries} />
+                      <span>Continue through this country&apos;s records</span><small>{runAllCountries ? "Included in Run all countries." : "The run pauses when this country is finished."}</small>
                     </label>
                     <div className="control-actions control-actions--inline">
                       <button type="button" className="button button--primary" disabled={!selectedRecord || !connected || isRunActive} onClick={() => void startSearch()}>▶ <span>Start</span></button>
@@ -1196,23 +1220,6 @@ export default function App() {
                       }}>■ <span>Stop</span></button>
                     </div>
                   </div>
-                </Panel>
-
-                <Panel
-                  id="country-progress"
-                  className="country-progress-card"
-                  title="Country progress"
-                  subtitle="Records completed in each country during this run."
-                  summary={`${new Set(enabledQueries.map((query) => query.country_code)).size} countries`}
-                  defaultOpen={false}
-                  auto={isRunActive}
-                >
-                  <div className="country-progress-list">{[...new Set(enabledQueries.map((query) => query.country_code))].sort().map((country) => {
-                    const total = enabledQueries.filter((query) => query.country_code === country).length;
-                    const done = searchRun?.queryResults.filter((result) => result.status === "completed" && enabledQueries.find((query) => query.id === result.queryId)?.country_code === country).length ?? 0;
-                    const profile = countryFilters.find((item) => item.country_code === country);
-                    return <div key={country}><strong>{countryLabel(country)}</strong><span>{done}/{total} records</span>{profile && <small className="status-chip">{profile.params ? summarizeFilterParams(profile.params) : profile.summary}</small>}</div>;
-                  })}</div>
                 </Panel>
 
                 {searchRun?.status === "awaiting_filters" && (
@@ -1242,20 +1249,6 @@ export default function App() {
                   </section>
                 )}
 
-                {searchRun?.status === "paused" && (
-                  <section className="alert alert--warning" role="status">
-                    <span><strong>Interrupted or paused run</strong> · {searchRun.statusText}</span>
-                    <div className="button-row">
-                      <button className="button button--secondary button--small" type="button" disabled={searchRun.pendingSave} onClick={() => void sendRunAction("RESUME_SEARCH")}>Resume</button>
-                      <button className="button button--danger-outline button--small" type="button" disabled={searchRun.pendingSave} onClick={() => {
-                        if (window.confirm("Discard this run? Already saved results will remain.")) {
-                          void sendRunAction("DISCARD_RUN");
-                        }
-                      }}>Discard</button>
-                    </div>
-                  </section>
-                )}
-
                 {isRunActive && searchRun && (
                   <Panel
                     id="live-run"
@@ -1280,6 +1273,7 @@ export default function App() {
                     <div className="live-run-footer"><span>Last saved: {summary?.last_saved_at ? new Date(summary.last_saved_at).toLocaleTimeString() : "Not saved yet"}</span><div className="button-row">
                       {searchRun.status === "running" && <button className="button button--secondary" type="button" onClick={() => void sendRunAction("PAUSE_SEARCH")}>Pause</button>}
                       {searchRun.status === "paused" && !searchRun.pendingSave && <button className="button button--secondary" type="button" onClick={() => void sendRunAction("RESUME_SEARCH")}>Resume</button>}
+                      {searchRun.status === "paused" && <button className="button button--danger-outline" type="button" disabled={searchRun.pendingSave} onClick={() => { if (window.confirm("Discard this run? Already saved results will remain.")) void sendRunAction("DISCARD_RUN"); }}>Discard</button>}
                       <button className="button button--danger-outline" type="button" onClick={() => { if (window.confirm("Stop this search run? The run will be saved as stopped and existing data will be kept.")) void sendRunAction("STOP_SEARCH"); }}>Stop</button>
                     </div></div>
                     {searchRun.error && <p className="feedback feedback--error" role="alert">{searchRun.error}</p>}
@@ -1308,23 +1302,6 @@ export default function App() {
                   </section>
                 )}
 
-                {searchRun && <Panel
-                  id="recent-captures"
-                  className="recent-captures"
-                  title="Recent captures"
-                  subtitle="Email occurrences saved in this run."
-                  summary={`${searchRun.recentCaptures.length} captured`}
-                  defaultOpen={false}
-                  auto={isRunActive}
-                >
-                  {searchRun.recentCaptures.length ? <ul>
-                    {searchRun.recentCaptures.map((capture, index) => <li key={`${capture.email}-${capture.seen_at}-${index}`}>
-                      <span><strong>{capture.email}</strong><small>{new Date(capture.seen_at).toLocaleString()}</small></span>
-                      {capture.post_url ? <a href={capture.post_url} target="_blank" rel="noreferrer">Open post</a> : "Link unavailable"}
-                    </li>)}
-                  </ul> : <EmptyState title="No captures yet" text="Email occurrences saved during this run will appear here." />}
-                </Panel>}
-
                 <Panel
                   id="today-results"
                   className="table-card"
@@ -1339,11 +1316,6 @@ export default function App() {
                   ) : <p className="alert alert--warning">Upload your master email file in Settings to compare against existing addresses.</p>}
                   {masterInfo?.current && summary && timestampLocalDate(masterInfo.current.uploaded_at, settings.timezone) !== summary.date && <p className="alert alert--warning">Upload today's master file for the latest comparison.</p>}
                   {dailyComparison ? <>
-                    <div className="metrics-grid daily-comparison-metrics" aria-label="Today's master comparison">
-                      <article className="metric-card card"><span className="metric-label">Collected today</span><strong>{dailyComparison.collected}</strong></article>
-                      <article className="metric-card card"><span className="metric-label">Already in master</span><strong>{dailyComparison.already_in_master}</strong></article>
-                      <article className="metric-card card"><span className="metric-label">New / unique</span><strong>{dailyComparison.new}</strong></article>
-                    </div>
                     {dailyComparison.emails.length ? <>
                       <label className="field"><span>Search new emails</span><input type="search" value={newEmailSearch} onChange={(event) => setNewEmailSearch(event.target.value)} placeholder="Email, country or city" /></label>
                       <div className="table-wrap"><table><thead><tr><th>Email</th><th>Country</th><th>City</th><th>Post</th></tr></thead><tbody>
@@ -1500,7 +1472,7 @@ export default function App() {
                     <Panel id="history-chart" title="New emails by country" summary={`Top: ${countryLabel([...dailyHistoryCountries].sort((a, b) => b.newCount - a.newCount)[0].country_code)}`}>
                       <div className="chart-card">{dailyHistoryCountries.map((row) => {
                         const maximum = Math.max(...dailyHistoryCountries.map((item) => item.newCount), 1);
-                        return <div className="bar-row" key={row.country_code}><span>{countryLabel(row.country_code)}</span><div className="bar-track"><div className="bar-fill" style={{ width: `${Math.max(3, row.newCount / maximum * 100)}%` }} /></div><strong>{row.newCount}</strong></div>;
+                        return <div className="bar-row" key={row.country_code}><span title={countryLabel(row.country_code)}>{countryLabel(row.country_code)}</span><div className="bar-track"><div className="bar-fill" style={{ width: row.newCount > 0 ? `${Math.max(2, row.newCount / maximum * 100)}%` : "0" }} /></div><strong>{row.newCount}</strong></div>;
                       })}</div>
                     </Panel>
                     <Panel id="history-days" className="table-card" title="Day by day" summary={`${dailyHistory.days.length} rows`}>

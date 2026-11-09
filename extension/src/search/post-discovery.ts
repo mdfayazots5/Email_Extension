@@ -1,6 +1,72 @@
 import { selectorSets } from "./selectors";
 
+const postUrnPattern = /urn(?::|%3A)li(?::|%3A)(activity|ugcPost|share)(?::|%3A)(\d{10,})/i;
+const activityPathPattern = /[-_]activity-(\d{10,})/i;
+
+function urnFromValue(value: string): string {
+  const match = value.match(postUrnPattern);
+  if (match) return `urn:li:${match[1].toLowerCase() === "ugcpost" ? "ugcPost" : match[1].toLowerCase()}:${match[2]}`;
+  const activity = value.match(activityPathPattern);
+  return activity ? `urn:li:activity:${activity[1]}` : "";
+}
+
+/** LinkedIn's tracking scope stores JSON whose payload is a byte array (`{"type":"Buffer","data":[…]}`). */
+function urnFromTrackingScope(value: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return "";
+  }
+  const pending: unknown[] = [parsed];
+  while (pending.length) {
+    const item = pending.pop();
+    if (Array.isArray(item)) {
+      if (item.length > 20 && item.every((byte) => typeof byte === "number" && byte >= 0 && byte < 256)) {
+        const urn = urnFromValue(String.fromCharCode(...item));
+        if (urn) return urn;
+      } else {
+        pending.push(...item);
+      }
+    } else if (item && typeof item === "object") {
+      pending.push(...Object.values(item));
+    } else if (typeof item === "string") {
+      const urn = urnFromValue(item);
+      if (urn) return urn;
+    }
+  }
+  return "";
+}
+
+function urnFromAttributes(element: Element): string {
+  for (const attribute of element.attributes) {
+    if (attribute.name === "href") continue;
+    const urn = attribute.name === "data-view-tracking-scope"
+      ? urnFromTrackingScope(attribute.value) || urnFromValue(attribute.value)
+      : urnFromValue(attribute.value);
+    if (urn) return urn;
+  }
+  return "";
+}
+
+/**
+ * The post's own URN from the card markup (data-urn, data-id, componentkey, tracking scope…),
+ * checked before links in the post body, which can point to other posts.
+ */
+export function findPostUrn(post: HTMLElement): string {
+  const own = urnFromAttributes(post);
+  if (own) return own;
+  for (const element of post.querySelectorAll("*")) {
+    if (element.closest("[data-testid='expandable-text-box'], .update-components-text, .feed-shared-inline-show-more-text")) continue;
+    const urn = urnFromAttributes(element);
+    if (urn) return urn;
+  }
+  return "";
+}
+
 export function findPostPermalink(post: HTMLElement): string {
+  const urn = findPostUrn(post);
+  if (urn) return `https://www.linkedin.com/feed/update/${urn}/`;
   for (const anchor of post.querySelectorAll<HTMLAnchorElement>(selectorSets.postPermalinks)) {
     try {
       const url = new URL(anchor.href, post.ownerDocument.baseURI);

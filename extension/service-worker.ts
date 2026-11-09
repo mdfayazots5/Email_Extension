@@ -4,8 +4,9 @@ import { buildLinkedInSearchUrl, buildLinkedInSearchUrlFromParams, captureLinked
 import { resumeRunStatus, transitionRun } from "./src/search/run-state";
 import { canStartAfterFallbackNavigation, canUseAutomaticFilterClick, resolveFilterChoice } from "./src/search/filter-choice";
 import { retryTransientSave, saveBatchWithSafetyCopy } from "./src/search/safe-batch-save";
-import { countryQueries, nextEnabledQueryInCountry, orderedEnabledQueries, reachedDailyPostLimit, shouldRetryQuery } from "./src/search/query-chain";
+import { countryQueries, nextChainQuery, orderedEnabledQueries, reachedDailyPostLimit, shouldRetryQuery } from "./src/search/query-chain";
 import { countryLabel } from "./src/ui/display";
+import { isStorableEmail, repairEmailLocalPart } from "../shared/email-normalization";
 
 type StartMessage = {
   type: "START_SEARCH";
@@ -55,6 +56,24 @@ type SaveBatchMessage = {
 };
 
 type WorkerMessage = StartMessage | PopupStartMessage | OnPageMessage | FilterChoiceMessage | CountryBoundaryMessage | ActionMessage | ContentProgress | SaveBatchMessage;
+
+/**
+ * Repairs or drops addresses the service would reject, so one bad address cannot fail the
+ * whole batch. Also unblocks pending batches captured before extraction was tightened.
+ */
+function storableCaptures(captures: CaptureBatchItem[]): CaptureBatchItem[] {
+  return captures.map((capture) => {
+    const seen = new Set<string>();
+    const emails = capture.emails.flatMap((item) => {
+      const email = repairEmailLocalPart(item.email.trim());
+      if (!isStorableEmail(email) || seen.has(email)) return [];
+      seen.add(email);
+      return [{ ...item, email }];
+    });
+    const dropped = capture.emails.length - emails.length;
+    return dropped === 0 ? capture : { ...capture, emails, ignored_emails: Math.min(100, capture.ignored_emails + dropped) };
+  });
+}
 
 const launchingTabs = new Set<number>();
 const saveDiagnosticLogKey = "latestSaveDiagnosticLog";
@@ -124,7 +143,8 @@ async function readRun(): Promise<SearchRunState | null> {
     filtersConfigured: run.filtersConfigured ?? false,
     currentRecordNumber: run.currentRecordNumber ?? 1,
     debugScan: run.debugScan ?? false,
-    experimentalAutomaticFilters: run.experimentalAutomaticFilters ?? false
+    experimentalAutomaticFilters: run.experimentalAutomaticFilters ?? false,
+    runAllCountries: run.runAllCountries ?? false
   };
 }
 
@@ -183,7 +203,8 @@ function progressData(run: SearchRunState) {
     debugScan: run.debugScan ?? false,
     experimentalAutomaticFilters: run.experimentalAutomaticFilters,
     nextCountryCode: run.nextCountryCode,
-    nextCountryRecords: run.nextCountryRecords
+    nextCountryRecords: run.nextCountryRecords,
+    runAllCountries: run.runAllCountries ?? false
   };
 }
 
@@ -205,8 +226,15 @@ async function patchRun(run: SearchRunState, ended = false): Promise<void> {
   }
 }
 
+const activeRunStatuses: ReadonlyArray<SearchRunState["status"]> = ["running", "paused", "awaiting_filters", "country_completed"];
+
 async function publish(run: SearchRunState): Promise<void> {
   await storeRun(run);
+  if (activeRunStatuses.includes(run.status)) {
+    // Keep the on-page/popup selection on the record the chain is actually working on,
+    // so it survives page reloads and a later error instead of reverting to the start record.
+    await chrome.storage.local.set({ selectedQueryId: run.queryId, selectedCountryCode: run.countryCode });
+  }
   try {
     await chrome.runtime.sendMessage({ type: "RUN_STATE", run });
   } catch {
@@ -360,7 +388,7 @@ async function handlePopupStart(
     api.queries(),
     api.settings(),
     api.today(),
-    chrome.storage.local.get(["selectedQueryId", "continueNext", "debugFilters", "debugScan", "continueOnFilterFailure", "experimentalAutomaticFilters"])
+    chrome.storage.local.get(["selectedQueryId", "continueNext", "runAllCountries", "debugFilters", "debugScan", "continueOnFilterFailure", "experimentalAutomaticFilters"])
   ]);
   const ordered = queries
     .filter((query) => Boolean(query.enabled))
@@ -396,7 +424,9 @@ async function handlePopupStart(
     : buildLinkedInSearchUrl(selected.query_text, {
       date_posted: "any", sort_by: "relevance", content_type: "all", from_member: "", other_note: ""
     });
-  const continueNext = continueNextOverride ?? (typeof stored.continueNext === "boolean" ? stored.continueNext : true);
+  const runAllCountries = stored.runAllCountries === true;
+  // Running all countries implies continuing through each country's records.
+  const continueNext = runAllCountries || (continueNextOverride ?? (typeof stored.continueNext === "boolean" ? stored.continueNext : true));
   const sameCountryQueries = countryQueries(ordered, selected.country_code);
   await chrome.storage.local.set({ selectedQueryId: selected.id, selectedCountryCode: selected.country_code, continueNext });
   const counters = {
@@ -413,6 +443,7 @@ async function handlePopupStart(
     queryId: selected.id,
     queryText: selected.query_text,
     continueNext,
+    runAllCountries,
     status: experimentalAutomaticFilters ? "running" as const : "awaiting_filters" as const,
     stage: experimentalAutomaticFilters ? "opening" as const : "awaiting_filters" as const,
     statusText: experimentalAutomaticFilters ? "Opening search" : `Set filters for ${selected.country_code}`,
@@ -479,7 +510,31 @@ async function handlePopupStart(
   return result;
 }
 
+const startingScanTabs = new Set<number>();
+
+async function sendStartScan(run: SearchRunState, tabId: number): Promise<boolean> {
+  // tabs.onUpdated can fire on the URL change before the content script (document_idle)
+  // is injected, so give the page time to load before reporting it as unresponsive.
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const current = await readRun();
+    if (!current || current.runId !== run.runId || current.status !== "running") return true;
+    if (await sendToContent(tabId, { type: "START_SCAN", runId: run.runId, run })) return true;
+    await new Promise((resolve) => setTimeout(resolve, 400 + attempt * 200));
+  }
+  return false;
+}
+
 async function startScan(run: SearchRunState, tabId: number): Promise<void> {
+  if (startingScanTabs.has(tabId)) return;
+  startingScanTabs.add(tabId);
+  try {
+    await startScanInTab(run, tabId);
+  } finally {
+    startingScanTabs.delete(tabId);
+  }
+}
+
+async function startScanInTab(run: SearchRunState, tabId: number): Promise<void> {
   run.tabId = tabId;
   run.status = "running";
   run.stage = "ready";
@@ -489,7 +544,7 @@ async function startScan(run: SearchRunState, tabId: number): Promise<void> {
   run.error = undefined;
   await publish(run);
   await patchRun(run);
-  if (!await sendToContent(tabId, { type: "START_SCAN", runId: run.runId, run })) {
+  if (!await sendStartScan(run, tabId)) {
     run.status = "error";
     run.stage = "error";
     run.statusText = "LinkedIn page did not respond";
@@ -820,8 +875,10 @@ async function advanceChain(runId: number): Promise<void> {
     run.waitingForNextQuery = false;
 
     const records = await api.queries();
+    const acrossCountries = run.runAllCountries === true;
+    const byCountryLabel = (left: string, right: string) => countryLabel(left).localeCompare(countryLabel(right));
     let cursorId = run.queryId;
-    let candidate = nextEnabledQueryInCountry(records, cursorId, run.countryCode);
+    let candidate = nextChainQuery(records, cursorId, run.countryCode, acrossCountries, byCountryLabel);
     while (candidate) {
       try {
         await api.acquireQueryLock(candidate.id, run.runId, run.profileId, run.profileLabel);
@@ -837,8 +894,13 @@ async function advanceChain(runId: number): Promise<void> {
         await publish(run);
         await patchRun(run);
         cursorId = candidate.id;
-        candidate = nextEnabledQueryInCountry(records, cursorId, run.countryCode);
+        candidate = nextChainQuery(records, cursorId, candidate.country_code, acrossCountries, byCountryLabel);
       }
+    }
+    if (!candidate && acrossCountries) {
+      run.waitingForNextQuery = false;
+      await finishRun(run, "completed", `All countries completed · ${run.queryResults.filter((result) => result.status === "completed").length} records scanned.`);
+      return;
     }
     if (!candidate) {
       const ordered = orderedEnabledQueries(records);
@@ -860,6 +922,11 @@ async function advanceChain(runId: number): Promise<void> {
       await publish(run);
       await patchRun(run);
       return;
+    }
+    if (candidate.country_code !== run.countryCode) {
+      // Run-all-countries: cross the boundary without pausing, keeping the captured filters.
+      run.countryCode = candidate.country_code;
+      run.countryQueryIds = countryQueries(records, candidate.country_code).map((record) => record.id);
     }
     const orderedCountryRecords = countryQueries(records, run.countryCode);
     const candidateIndex = orderedCountryRecords.findIndex((record) => record.id === candidate.id);
@@ -895,7 +962,7 @@ async function advanceChain(runId: number): Promise<void> {
       : buildLinkedInSearchUrlFromParams(candidate.query_text, run.capturedFilterParams ?? "");
     run.statusText = run.filterFallback
       ? `Reusing the manually selected LinkedIn filters for ${candidate.label}`
-      : `Record ${candidateIndex + 1} of ${orderedCountryRecords.length}`;
+      : `${acrossCountries ? `${countryLabel(run.countryCode)} · ` : ""}Record ${candidateIndex + 1} of ${orderedCountryRecords.length}`;
     await publish(run);
     await patchRun(run);
     if (run.tabId === undefined) {
@@ -1001,7 +1068,7 @@ async function handleSaveBatch(
         batch_id: batch.batchId,
         run_id: batch.runId,
         query_id: batch.queryId,
-        captures: batch.captures
+        captures: storableCaptures(batch.captures)
       }),
       (error) => error instanceof ApiError && (
         error.kind === "offline" || (error.kind === "http" && (error.status ?? 0) >= 500)

@@ -72,6 +72,31 @@ describe("LinkedIn post discovery", () => {
     expect(findPostPermalink(card)).toBe("https://www.linkedin.com/feed/update/urn:li:activity:42/");
   });
 
+  it("builds the permalink from the card's own post URN before links in the post text", () => {
+    const dom = new JSDOM(`
+      <div role="listitem" data-urn="urn:li:activity:7390000000000000001">
+        <span data-testid="expandable-text-box">See <a href="https://www.linkedin.com/feed/update/urn:li:activity:111111111111/">another post</a></span>
+      </div>
+    `, { url: "https://www.linkedin.com/search/results/content/" });
+    const card = dom.window.document.querySelector<HTMLElement>("[role='listitem']")!;
+
+    expect(findPostPermalink(card)).toBe("https://www.linkedin.com/feed/update/urn:li:activity:7390000000000000001/");
+  });
+
+  it("finds the post URN in componentkey and encoded tracking-scope attributes", () => {
+    const payload = [...JSON.stringify({ updateUrn: "urn:li:ugcPost:7390000000000000002" })].map((char) => char.charCodeAt(0));
+    const scope = JSON.stringify([{ breadcrumb: { content: { type: "Buffer", data: payload } } }]);
+    const dom = new JSDOM(`
+      <div role="listitem"><div id="a" componentkey="expandedurn:li:share:7390000000000000003FeedType"></div></div>
+      <div role="listitem"><div id="b"></div></div>
+    `);
+    const [first, second] = [...dom.window.document.querySelectorAll<HTMLElement>("[role='listitem']")];
+    second.querySelector("#b")!.setAttribute("data-view-tracking-scope", scope);
+
+    expect(findPostPermalink(first)).toBe("https://www.linkedin.com/feed/update/urn:li:share:7390000000000000003/");
+    expect(findPostPermalink(second)).toBe("https://www.linkedin.com/feed/update/urn:li:ugcPost:7390000000000000002/");
+  });
+
   it("logs link route and structure metadata without storing link text or profile identifiers", () => {
     const dom = new JSDOM(`
       <div role="listitem" componentkey="update-card-focus_opaque">
