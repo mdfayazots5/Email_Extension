@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, unlink } from "node:fs/promises";
+import { mkdir, readdir, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +7,7 @@ import { z, ZodError } from "zod";
 import { csvCell, tsvCell } from "./csv.js";
 import { dateSchema, localDate, periodRange } from "./date-utils.js";
 import { tokenMatches } from "./token.js";
-import { dailyCsv, recomputeDailyComparison, writeDailyComparison } from "./daily-comparison.js";
+import { buildDailyWorkbookFromDb, dailyCsv, recomputeDailyComparison, writeDailyComparison } from "./daily-comparison.js";
 import { importMasterFile, masterStatus } from "./master-import.js";
 import { normalizeForComparison } from "../../shared/email-normalization.ts";
 import { DEFAULT_JOB_WORDS } from "../../shared/post-defaults.ts";
@@ -290,18 +290,14 @@ export function createApp(options: AppOptions) {
   });
 
   app.get("/export/unique-xlsx", async (_request, response) => {
-    try {
-      const workbook = await readFile(workbookPath);
-      response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      response.setHeader("Content-Disposition", 'attachment; filename="Unique-Emails.xlsx"');
-      response.send(workbook);
-    } catch (error) {
-      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
-        jsonError(response, 404, "The daily workbook has not been created yet.");
-        return;
-      }
-      throw error;
+    if (!db.prepare("SELECT 1 FROM daily_comparison_emails LIMIT 1").get()) {
+      jsonError(response, 404, "The daily workbook has not been created yet.");
+      return;
     }
+    const workbook = await buildDailyWorkbookFromDb(db);
+    response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    response.setHeader("Content-Disposition", 'attachment; filename="Unique-Emails.xlsx"');
+    response.send(workbook);
   });
 
   app.get("/export/unique-csv", (request, response) => {

@@ -1,6 +1,7 @@
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import ExcelJS from "exceljs";
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
@@ -289,6 +290,11 @@ describe("storage service API", () => {
     const workbook = await api("/export/unique-xlsx");
     expect(workbook.status).toBe(200);
     expect(workbook.headers.get("content-disposition")).toContain("Unique-Emails.xlsx");
+    const downloaded = new ExcelJS.Workbook();
+    await downloaded.xlsx.load(await workbook.arrayBuffer());
+    const daySheet = downloaded.getWorksheet("2026-10-25")!;
+    expect(daySheet.getCell("C1").value).toBe("Country (column A)");
+    expect(daySheet.getCell("D2").value).toBe("United Kingdom");
 
     const countryCsv = await api("/export/unique-csv?date=2026-10-25&country=GB");
     expect(countryCsv.headers.get("content-disposition")).toContain("Unique-Emails-2026-10-25-United-Kingdom.csv");

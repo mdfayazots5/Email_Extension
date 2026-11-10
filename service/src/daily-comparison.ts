@@ -145,21 +145,7 @@ export async function writeDailyWorkbook(
 
   let sheet = workbook.getWorksheet(currentDay);
   if (!sheet) sheet = workbook.addWorksheet(currentDay);
-  sheet.spliceRows(1, sheet.rowCount);
-  sheet.getCell("A1").value = "Unique Emails for this Day";
-  sheet.getCell("B1").value = "Not in Reference CSV";
-  sheet.getCell("C1").value = "Country (column A)";
-  sheet.getCell("D1").value = "Country (column B)";
-  const allEmails = [...currentEmails].sort((a, b) => a.ordinal - b.ordinal);
-  const newEmails = allEmails.filter((email) => email.isNew);
-  for (let index = 0; index < allEmails.length; index++) {
-    sheet.getCell(index + 2, 1).value = allEmails[index].originalEmail;
-    sheet.getCell(index + 2, 3).value = countryName(allEmails[index].countryCode);
-  }
-  for (let index = 0; index < newEmails.length; index++) {
-    sheet.getCell(index + 2, 2).value = newEmails[index].originalEmail;
-    sheet.getCell(index + 2, 4).value = countryName(newEmails[index].countryCode);
-  }
+  fillDaySheet(sheet, currentEmails);
 
   const model = workbook.model;
   const dateNames = new Set(model.worksheets
@@ -183,6 +169,45 @@ export async function writeDailyWorkbook(
   } finally {
     await rm(temporaryPath, { force: true });
   }
+}
+
+type SheetEmail = Pick<DailyEmail, "originalEmail" | "countryCode" | "isNew" | "ordinal">;
+
+function fillDaySheet(sheet: ExcelJS.Worksheet, emails: SheetEmail[]): void {
+  sheet.spliceRows(1, sheet.rowCount);
+  sheet.getCell("A1").value = "Unique Emails for this Day";
+  sheet.getCell("B1").value = "Not in Reference CSV";
+  sheet.getCell("C1").value = "Country (column A)";
+  sheet.getCell("D1").value = "Country (column B)";
+  const allEmails = [...emails].sort((a, b) => a.ordinal - b.ordinal);
+  const newEmails = allEmails.filter((email) => email.isNew);
+  for (let index = 0; index < allEmails.length; index++) {
+    sheet.getCell(index + 2, 1).value = allEmails[index].originalEmail;
+    sheet.getCell(index + 2, 3).value = countryName(allEmails[index].countryCode);
+  }
+  for (let index = 0; index < newEmails.length; index++) {
+    sheet.getCell(index + 2, 2).value = newEmails[index].originalEmail;
+    sheet.getCell(index + 2, 4).value = countryName(newEmails[index].countryCode);
+  }
+}
+
+/**
+ * Builds the workbook fresh from the database: one sheet per day, each with its
+ * country columns. Sheets saved to disk before countries existed lack them.
+ */
+export async function buildDailyWorkbookFromDb(db: DatabaseSync): Promise<Buffer> {
+  const rows = db.prepare(`
+    SELECT day, original_email, country_code, is_new, ordinal FROM daily_comparison_emails ORDER BY day, ordinal
+  `).all() as Array<{ day: string; original_email: string; country_code: string | null; is_new: number; ordinal: number }>;
+  const byDay = new Map<string, SheetEmail[]>();
+  for (const row of rows) {
+    const list = byDay.get(row.day) ?? [];
+    list.push({ originalEmail: row.original_email, countryCode: row.country_code ?? "", isNew: Boolean(row.is_new), ordinal: row.ordinal });
+    byDay.set(row.day, list);
+  }
+  const workbook = new ExcelJS.Workbook();
+  for (const day of [...byDay.keys()].sort()) fillDaySheet(workbook.addWorksheet(day), byDay.get(day) ?? []);
+  return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
 export async function replaceWorkbookFile(
