@@ -2,30 +2,53 @@
 
 Chrome Manifest V3 extension and a localhost Node.js storage service. The permanent SQLite database is owned by the service at `data\tracker.db`; the extension never writes the database file.
 
-## Requirements
+## Install (Windows, once per Windows user)
 
-- Node.js 22.5 or newer and npm
-- Google Chrome
+You need:
 
-The storage service uses Node's built-in `node:sqlite` module. It does not require SQLite packages or Windows C++ build tools. Node 22 may display an experimental-module warning for `node:sqlite`.
+- **Google Chrome** (Edge and Brave also work)
+- **Node.js 22.13 or newer**: install the **LTS** version from https://nodejs.org and keep the default options
+- **Git** (optional): only needed for one-click updates. Without Git, download the ZIP from GitHub instead
 
-## Install (once per Windows user)
+Steps:
 
-1. In Chrome, open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**, and choose the folder you cloned this project into (the one containing `manifest.json`). Do this in every Chrome profile you want to use.
-2. Right-click `native-host\install.ps1` and choose **Run with PowerShell** (or run `.\native-host\install.ps1`). It installs the service packages if needed, builds a small native messaging host, registers it for Chrome, Brave, and Edge, and allows the extension's ID (calculated from the folder path) in `service\.env`.
-3. Close every Chrome window and reopen Chrome.
+1. Get the project. Either run `git clone <repo URL>` or, on GitHub, choose **Code → Download ZIP** and extract it. Put the folder somewhere permanent, for example `Documents\Email_Extension`. If you move the folder later, run `install.bat` again.
+2. Double-click **`install.bat`** in the project folder and wait for **Done.** It installs packages, builds the extension and connects it to Chrome. The first run takes a minute or two and needs internet.
+3. In Chrome open `chrome://extensions`, switch on **Developer mode** (top right), click **Load unpacked**, and select the project folder (the one that contains `install.bat`). Do this in every Chrome profile you want to use.
+4. Close every Chrome window and open Chrome again.
 
-That's all. There is no service to start and no token to paste. When any Chrome profile opens the extension, Chrome starts the native host. The host starts the storage service hidden in the background (if it is not already running) and hands the extension its token. Every profile of this Windows user shares the same service and the same `data\tracker.db`. The service keeps running in the background; the first start after Windows boots takes a few seconds. Its output goes to `data\logs\service.log`.
+That is all. There is no service to start and no token to paste. When the extension opens, Chrome starts a small helper (`native-host\host.mjs`), which starts the storage service hidden in the background and gives the extension its token. Every Chrome profile of this Windows user shares the same service and the same `data\tracker.db`. The first start after Windows boots takes a few seconds. Service output goes to `data\logs\service.log`.
 
-Run `install.ps1` again only after changing `native-host\Program.cs` or moving the project folder. `native-host\uninstall.ps1` removes the registration.
-
-Optional service settings in `service\.env`: `DB_PATH`, `BACKUP_DIR`, `APP_TIMEZONE`, `PORT` (defaults: `data\tracker.db`, `data\backups`, the computer's timezone, 4317). The service creates `service\token.txt` on first start; keep it private. The service binds only to `127.0.0.1` and accepts only allowed extension origins.
-
-For development you can still run the service in a terminal with `.\start-service.bat` or `npm run service`.
+**First run.** When you first open the extension, a short welcome guide (Next / Back) explains the workflow with example screens; the example emails in it are never saved. At the end, **Add sample queries** creates five example search records (India, UAE, UK, US) that you edit to your own job title. The first time you open each page (View, Queries, History, Settings) and the first time you open a LinkedIn Posts search, a few tips point at each part. Press **?** at the top of the tracker (or in the LinkedIn bar) to replay them, or choose **? → Reset all tips**. The popup's **How to use** link opens the guide too.
 
 A new installation starts with no saved searches. Open **Queries → Add country**, pick a country and add your first search record (usually a city) with a LinkedIn-style query for the job you want, for example `("Job title" OR "Other title") AND "City" AND hiring`.
 
-## Build the extension
+### Update
+
+- **Installed with Git:** double-click **`update.bat`**. It downloads the latest version and rebuilds.
+- **Installed from a ZIP:** download the new ZIP, extract it over the old folder (your `data` folder is kept), then double-click **`install.bat`**.
+
+Then click the reload icon on the **Email Extension** card in `chrome://extensions`. The background service restarts with the new code by itself.
+
+### Uninstall
+
+Double-click **`uninstall.bat`**. It stops the service and removes the Chrome registration. Then remove the extension in `chrome://extensions`. Your data stays in the `data` folder until you delete the project folder.
+
+### Your data
+
+Everything stays on your computer in the project's `data` folder: the database, backups, logs and imported master lists. Nothing is uploaded anywhere, and `git` never commits these files. Back up the `data` folder if the collected data matters to you.
+
+## Settings for advanced users
+
+Optional service settings in `service\.env` (copy `service\.env.example`): `DB_PATH`, `BACKUP_DIR`, `APP_TIMEZONE`, `PORT` (defaults: `data\tracker.db`, `data\backups`, the computer's timezone, 4317), and `CORS_EXTENSION_IDS` for extra extension IDs. The service creates `service\token.txt` on first start; keep it private. The service binds only to `127.0.0.1` and accepts only the extension's fixed ID (`dellkemhijjjiopbmnbcokdnklmcmona`, set by the `key` in `extension\tracker.manifest.json`).
+
+The storage service uses Node's built-in `node:sqlite` module, so it needs no SQLite packages or C++ build tools. Node may print an experimental-feature warning for `node:sqlite` in the log; this is harmless.
+
+## For developers
+
+For development you can run the service in a terminal with `.\start-service.bat` or `npm run service` instead of letting Chrome start it.
+
+### Build the extension
 
 After changing extension code, build from the project root:
 
@@ -103,9 +126,11 @@ Backups are SQLite-consistent snapshots in `data\backups\`. The automatic backup
 
 ## Troubleshooting
 
-- **One-time setup screen:** the native host is not registered. Run `native-host\install.ps1`, then restart Chrome.
+- **One-time setup screen:** the helper is not registered. Double-click `install.bat`, then restart Chrome.
+- **install.bat says Node.js is missing or too old:** install the LTS version from https://nodejs.org, close the window, and run `install.bat` again.
+- **install.bat fails while installing packages:** check your internet connection, close Chrome, and run it again.
 - **Could not connect / service did not start:** select **Retry**. If it keeps failing, check `data\logs\service.log`. Port 4317 must be free.
-- **403 / blocked extension origin:** the extension was loaded from a different folder. Run `native-host\install.ps1` again, end the background `node.exe` service process, then click **Not connected · Reconnect** in the header.
+- **403 / blocked extension origin:** the extension in Chrome is an old copy with a different ID. Remove it in `chrome://extensions`, choose **Load unpacked** on the project folder again, then run `install.bat`.
 - **Query locked:** another profile may currently be scanning it; wait for that run to finish or pause, or continue to the next enabled record.
 - **LinkedIn security notice:** the run stops. Resolve any account notice manually; do not attempt automatic retries or bypasses.
 - **Database/disk error:** check free disk space and permissions on `data\` and `data\backups\`; failed saves are reported and are not counted as successful.

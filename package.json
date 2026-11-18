@@ -1,7 +1,7 @@
 {
   "name": "job-post-email-tracker",
   "private": true,
-  "version": "0.2.0",
+  "version": "1.0.0",
   "workspaces": [
     "extension",
     "service"
@@ -12,5 +12,8 @@
     "test:service": "npm run test --workspace service",
     "test:extension": "npm run test --workspace extension",
     "typecheck:service": "npm run typecheck --workspace service"
+  },
+  "engines": {
+    "node": ">=22.13.0"
   }
 }

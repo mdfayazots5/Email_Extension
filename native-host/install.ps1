@@ -1,13 +1,14 @@
 # One-time setup for the Email Extension (per Windows user).
 #
-# After this runs, Chrome starts the tracker service by itself whenever any Chrome
-# profile opens the extension: no start-service.bat, no token to paste.
+# Normally started by double-clicking install.bat (or update.bat) in the project folder.
+# It installs packages, builds the extension, and registers the native host so Chrome
+# starts the tracker service by itself: no terminal, no token to paste.
 #
-# Run it again only after changing native-host\Program.cs or moving the project folder.
+# Run it again after updating the project or moving the project folder.
 
 param(
-  # Extra extension IDs to allow (normally not needed: the ID of the unpacked
-  # extension loaded from the project folder is calculated automatically).
+  # Extra extension IDs to allow (normally not needed: the extension ID is fixed by
+  # the "key" in extension\tracker.manifest.json).
   [Parameter()]
   [ValidatePattern("^[a-p]{32}$")]
   [string[]] $ExtensionId = @(),
@@ -18,80 +19,98 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$fixedExtensionId = "dellkemhijjjiopbmnbcokdnklmcmona"
+$minimumNode = [version]"22.13.0"
 $hostName = "com.jobposttracker.service"
 $nativeHostDirectory = $PSScriptRoot
 $projectRoot = Split-Path -Parent $nativeHostDirectory
-$publishDirectory = Join-Path $nativeHostDirectory "publish"
-$hostPath = Join-Path $publishDirectory "JobPostTrackerHost.exe"
+$hostScript = Join-Path $nativeHostDirectory "host.mjs"
+$hostBat = Join-Path $nativeHostDirectory "host.bat"
 $manifestPath = Join-Path $nativeHostDirectory "$hostName.json"
-$envPath = Join-Path $projectRoot "service\.env"
 $registryRoots = @{
   Chrome = "HKCU:\Software\Google\Chrome\NativeMessagingHosts"
   Brave  = "HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts"
   Edge   = "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts"
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "manifest.json"))) {
-  throw "manifest.json was not found in $projectRoot. Run 'npm run build' first."
+function Step([string] $text) { Write-Host ""; Write-Host "==> $text" -ForegroundColor Cyan }
+
+Push-Location $projectRoot
+try {
+  # Files from a downloaded ZIP are marked as coming from the internet; clear that mark.
+  Step "Preparing files"
+  Get-ChildItem -LiteralPath $projectRoot -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -notmatch "\\node_modules\\" } |
+    Unblock-File -ErrorAction SilentlyContinue
+
+  Step "Checking Node.js"
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if (-not $nodeCommand) {
+    throw "Node.js was not found. Install the LTS version from https://nodejs.org (keep the default options), then run install.bat again."
+  }
+  $nodePath = $nodeCommand.Source
+  $nodeVersionText = (& $nodePath --version).Trim()
+  $nodeVersion = [version]($nodeVersionText.TrimStart("v") -replace "-.*$", "")
+  if ($nodeVersion -lt $minimumNode) {
+    throw "Node.js $nodeVersionText is too old (need $minimumNode or newer). Install the LTS version from https://nodejs.org, then run install.bat again."
+  }
+  Write-Host "  Node $nodeVersionText at $nodePath"
+
+  # A running service keeps files in node_modules open, which makes npm ci fail on Windows.
+  # The extension starts the service again by itself the next time it is opened.
+  $listener = Get-NetTCPConnection -LocalPort 4317 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($listener) {
+    $running = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+    if ($running -and $running.ProcessName -eq "node") {
+      Step "Stopping the running tracker service"
+      & taskkill.exe /PID $running.Id /T /F | Out-Null
+      Start-Sleep -Seconds 1
+    }
+  }
+
+  Step "Installing packages (first time takes a minute)"
+  if (Test-Path -LiteralPath (Join-Path $projectRoot "package-lock.json")) { & npm.cmd ci --no-audit --no-fund } else { & npm.cmd install --no-audit --no-fund }
+  if ($LASTEXITCODE -ne 0) { throw "Installing packages failed. Check your internet connection and run install.bat again." }
+
+  Step "Building the extension"
+  & npm.cmd run build
+  if ($LASTEXITCODE -ne 0) { throw "Building the extension failed. See the messages above." }
+  if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "manifest.json"))) { throw "The build did not produce manifest.json." }
+
+  Step "Registering the native host"
+  # Chrome launches this .bat; an absolute node.exe path avoids PATH and nvm surprises.
+  $batText = "@echo off`r`n`"$nodePath`" `"%~dp0host.mjs`" %*`r`n"
+  [System.IO.File]::WriteAllText($hostBat, $batText, [System.Text.Encoding]::ASCII)
+
+  $ids = @($fixedExtensionId) + $ExtensionId | Select-Object -Unique
+  $hostManifest = [ordered]@{
+    name = $hostName
+    description = "Starts the Email Extension service for the extension"
+    path = $hostBat
+    type = "stdio"
+    allowed_origins = @($ids | ForEach-Object { "chrome-extension://$_/" })
+  } | ConvertTo-Json -Depth 4
+  [System.IO.File]::WriteAllText($manifestPath, $hostManifest, [System.Text.UTF8Encoding]::new($false))
+
+  foreach ($name in ($Browser | Select-Object -Unique)) {
+    $registryPath = Join-Path $registryRoots[$name] $hostName
+    New-Item -Path $registryPath -Force | Out-Null
+    Set-Item -Path $registryPath -Value $manifestPath
+    Write-Host "  Registered for $name."
+  }
+
+  Write-Host ""
+  Write-Host "Done." -ForegroundColor Green
+  Write-Host ""
+  Write-Host "Next steps (first install only):"
+  Write-Host "  1. In Chrome open chrome://extensions and switch on 'Developer mode' (top right)."
+  Write-Host "  2. Click 'Load unpacked' and select this folder:"
+  Write-Host "       $projectRoot"
+  Write-Host "  3. Close every Chrome window and open Chrome again."
+  Write-Host ""
+  Write-Host "After an update: click the reload icon on the Email Extension card in chrome://extensions."
+  Write-Host "Your extension ID is $fixedExtensionId"
 }
-
-# Chrome derives an unpacked extension's ID from its folder path, so every profile
-# that loads this folder gets the same ID. Allow both drive-letter spellings.
-function Get-UnpackedExtensionId([string] $path) {
-  $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::Unicode.GetBytes($path))
-  -join ($hash[0..15] | ForEach-Object { $_.ToString("x2").ToCharArray() } | ForEach-Object { [char]([int][char]"a" + [Convert]::ToInt32([string]$_, 16)) })
+finally {
+  Pop-Location
 }
-$rootPath = (Resolve-Path -LiteralPath $projectRoot).Path.TrimEnd("\")
-$ids = @(
-  Get-UnpackedExtensionId ($rootPath.Substring(0, 1).ToUpper() + $rootPath.Substring(1))
-  Get-UnpackedExtensionId ($rootPath.Substring(0, 1).ToLower() + $rootPath.Substring(1))
-) + $ExtensionId | Select-Object -Unique
-
-Write-Output "Checking Node.js..."
-$node = Get-Command node -ErrorAction SilentlyContinue
-if (-not $node) { throw "Node.js was not found. Install Node.js 22.5 or newer from https://nodejs.org, then run this again." }
-Write-Output "  Node $(& node --version)"
-
-if (-not (Test-Path -LiteralPath (Join-Path $projectRoot "node_modules"))) {
-  Write-Output "Installing service packages (npm install)..."
-  Push-Location $projectRoot
-  try { & npm install; if ($LASTEXITCODE -ne 0) { throw "npm install failed." } } finally { Pop-Location }
-}
-
-Write-Output "Building the native host..."
-& dotnet publish (Join-Path $nativeHostDirectory "TrackerHost.csproj") --configuration Release --runtime win-x64 --self-contained true --output $publishDirectory --nologo -v quiet
-if ($LASTEXITCODE -ne 0) {
-  throw "Could not build the native host. Close every browser using the extension and try again."
-}
-
-$hostManifest = [ordered]@{
-  name = $hostName
-  description = "Starts the Email Extension service for the extension"
-  path = $hostPath
-  type = "stdio"
-  allowed_origins = @($ids | ForEach-Object { "chrome-extension://$_/" })
-} | ConvertTo-Json -Depth 4
-[System.IO.File]::WriteAllText($manifestPath, $hostManifest, [System.Text.UTF8Encoding]::new($false))
-
-foreach ($name in ($Browser | Select-Object -Unique)) {
-  $registryPath = Join-Path $registryRoots[$name] $hostName
-  New-Item -Path $registryPath -Force | Out-Null
-  Set-Item -Path $registryPath -Value $manifestPath
-  Write-Output "Registered for $name."
-}
-
-# Also allow the IDs in service\.env, so a service started by hand accepts the extension.
-$lines = @()
-if (Test-Path -LiteralPath $envPath) { $lines = @(Get-Content -LiteralPath $envPath) }
-$existing = @()
-$other = @()
-foreach ($line in $lines) {
-  if ($line -match "^\s*CORS_EXTENSION_IDS=(.*)$") { $existing += ($Matches[1].Trim('"', "'") -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
-  else { $other += $line }
-}
-$allIds = @($existing + $ids | Select-Object -Unique)
-[System.IO.File]::WriteAllLines($envPath, [string[]](@("CORS_EXTENSION_IDS=$($allIds -join ',')") + $other), [System.Text.UTF8Encoding]::new($false))
-
-Write-Output ""
-Write-Output "Done. Allowed extension IDs: $($ids -join ', ')"
-Write-Output "Close all Chrome windows, reopen Chrome, and open the extension. It connects by itself."
