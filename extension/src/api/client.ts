@@ -39,7 +39,7 @@ export interface TokenStore {
 
 export const NATIVE_HOST_NAME = "com.jobposttracker.service";
 export const HOST_NOT_INSTALLED_MESSAGE =
-  "One-time setup needed: run native-host\\install.ps1 from the project folder, then restart Chrome.";
+  "One-time setup needed: double-click install.bat in the project folder, then restart Chrome.";
 
 type EnsureResponse = { ok: true; token: string; started: boolean } | { ok: false; error: string };
 

@@ -47,7 +47,7 @@ export function SetupScreen({ onConnected }: SetupScreenProps) {
       {connecting && <p className="muted">Starting the tracker service. This takes a few seconds the first time after Windows starts.</p>}
       {!connecting && needsInstall && (
         <ol className="setup-steps">
-          <li><strong>Run the installer once</strong><span>In the project folder, right-click <code>native-host\install.ps1</code> and choose <strong>Run with PowerShell</strong>.</span></li>
+          <li><strong>Run the installer once</strong><span>In the project folder, double-click <code>install.bat</code> and wait until it says Done.</span></li>
           <li><strong>Restart Chrome</strong><span>Close every Chrome window and open Chrome again. Every Chrome profile on this PC then connects by itself.</span></li>
         </ol>
       )}

@@ -6,6 +6,11 @@ import { SetupScreen } from "./src/components/SetupScreen";
 import { ErrorBoundary } from "./src/components/ErrorBoundary";
 import { ConnectionLogControls } from "./src/components/ConnectionLogControls";
 import { ActivityLogControls } from "./src/components/ActivityLogControls";
+import { WelcomeTour } from "./src/components/WelcomeTour";
+import { PageTour } from "./src/components/PageTour";
+import { PAGE_TOURS } from "./src/guide/guide-content";
+import { markSeen, markWelcomeDone, readGuideState, resetGuide, type GuideState } from "./src/guide/guide-state";
+import { addSampleQueries } from "./src/guide/sample-queries";
 import { ACCOUNT_GUARD_KEY, clearLastWarning, readAccountGuard, type AccountGuard } from "./src/api/activity-log";
 import { buildLinkedInSearchUrl, summarizeFilterParams } from "./src/search/search-url";
 import { checkRule, evaluatePost } from "./src/search/post-rule";
@@ -174,7 +179,7 @@ function Panel({ id, title, subtitle, summary, actions, defaultOpen = true, auto
     return next;
   });
   return (
-    <section className={`card panel ${open ? "panel--open" : "panel--closed"} ${className}`}>
+    <section data-tour={id} className={`card panel ${open ? "panel--open" : "panel--closed"} ${className}`}>
       <header className="panel-head">
         <button type="button" className="panel-toggle" aria-expanded={open} aria-controls={`panel-${id}`} onClick={toggle}>
           <svg className="panel-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
@@ -249,6 +254,10 @@ export default function App() {
   const [savedSettings, setSavedSettings] = useState<AppSettings | null>(null);
   const [serviceError, setServiceError] = useState("");
   const [notice, setNotice] = useState("");
+  const [guideState, setGuideState] = useState<GuideState | null>(null);
+  const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [tourPage, setTourPage] = useState<Page | null>(null);
+  const [guideMenuOpen, setGuideMenuOpen] = useState(false);
   const [searchRun, setSearchRun] = useState<SearchRunState | null>(null);
   const [selectedQuery, setSelectedQuery] = useState<number | "">("");
   const [selectedCountry, setSelectedCountry] = useState("");
@@ -293,6 +302,56 @@ export default function App() {
   const [profileLabel, setProfileLabel] = useState("Chrome profile");
   const [profileId, setProfileId] = useState("");
   const [linkedinTabFound, setLinkedinTabFound] = useState(false);
+
+  // First run: show the welcome guide once, then a short tour the first time each page opens.
+  useEffect(() => {
+    if (!connected || checking) return;
+    let active = true;
+    void readGuideState().then((state) => {
+      if (!active) return;
+      setGuideState(state);
+      const asked = new URLSearchParams(window.location.search).get("guide") === "welcome";
+      if (asked || !state.welcomeDone) setWelcomeOpen(true);
+    });
+    return () => { active = false; };
+  }, [connected, checking]);
+
+  useEffect(() => {
+    if (!guideState || welcomeOpen || tourPage || !connected) return;
+    if (guideState.seen[page]) return;
+    const timer = window.setTimeout(() => setTourPage(page), 600);
+    return () => window.clearTimeout(timer);
+  }, [guideState, welcomeOpen, tourPage, page, connected]);
+
+  const closeWelcome = useCallback(() => {
+    setWelcomeOpen(false);
+    void markWelcomeDone().then(setGuideState);
+  }, []);
+
+  const closePageTour = useCallback(() => {
+    if (tourPage) void markSeen(tourPage).then(setGuideState);
+    setTourPage(null);
+  }, [tourPage]);
+
+  // Leaving a page ends its tour.
+  useEffect(() => {
+    if (tourPage && tourPage !== page) closePageTour();
+  }, [page, tourPage, closePageTour]);
+
+  const addSamples = async () => {
+    setServiceError("");
+    try {
+      const added = await addSampleQueries(api, queries);
+      setQueries(await api.queries());
+      setNotice(added > 0
+        ? `${added} sample records added. Change the job titles in each record to the job you want.`
+        : "The sample records are already in your list.");
+      closeWelcome();
+      setPage("queries");
+    } catch (error) {
+      setServiceError(formatError(error));
+    }
+  };
 
   const loadData = useCallback(async () => {
     setServiceError("");
@@ -1126,7 +1185,7 @@ export default function App() {
           <div className="brand-mark">EE</div>
           <div><strong>Email</strong><span>Extension</span></div>
         </div>
-        <nav className="top-nav" aria-label="Main navigation">
+        <nav className="top-nav" aria-label="Main navigation" data-tour="nav">
           {navItems.map((item) => (
             <button
               key={item.id}
@@ -1139,7 +1198,7 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="topbar-actions">
+        <div className="topbar-actions" data-tour="connection">
           {!checking && !connected ? (
             <button type="button" className="connection-pill is-offline connection-pill--action" disabled={settingsBusy} onClick={() => void testSettingsToken()} title="The tracker service starts automatically. Click to try again now.">
               <i />{settingsBusy ? "Reconnecting…" : "Not connected · Reconnect"}
@@ -1150,6 +1209,16 @@ export default function App() {
             </span>
           )}
           <time className="topbar-date">{new Date().toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</time>
+          <div className="guide-menu-wrap" data-tour="guide">
+            <button className="theme-toggle guide-button" type="button" title="Guide and tips" aria-label="Guide and tips" aria-haspopup="menu" aria-expanded={guideMenuOpen} onClick={() => setGuideMenuOpen((open) => !open)}>?</button>
+            {guideMenuOpen && (
+              <div className="guide-menu" role="menu" onMouseLeave={() => setGuideMenuOpen(false)}>
+                <button type="button" role="menuitem" onClick={() => { setGuideMenuOpen(false); setTourPage(null); setWelcomeOpen(true); }}>Welcome guide</button>
+                <button type="button" role="menuitem" disabled={!connected} onClick={() => { setGuideMenuOpen(false); setTourPage(page); }}>Tour this page</button>
+                <button type="button" role="menuitem" onClick={() => { setGuideMenuOpen(false); void resetGuide().then((state) => { setGuideState(state); setNotice("All tips will show again, including on LinkedIn."); }); }}>Reset all tips</button>
+              </div>
+            )}
+          </div>
           <button className="theme-toggle" title={`Switch to ${theme === "light" ? "dark" : "light"} mode`} type="button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}>
             {theme === "light" ? "☾" : "☀"}
           </button>
@@ -1181,7 +1250,7 @@ export default function App() {
 
             {page === "view" && (
               <>
-                <section className="metrics-grid" aria-label="Today at a glance">
+                <section className="metrics-grid" aria-label="Today at a glance" data-tour="metrics">
                   <article className="metric-card card"><span className="metric-icon metric-icon--green">✓</span><span className="metric-label">New emails today</span><strong>{dailyComparison?.new ?? "—"}</strong><small>Not in your master list</small></article>
                   <article className="metric-card card"><span className="metric-icon metric-icon--blue">@</span><span className="metric-label">Collected today</span><strong>{dailyComparison?.collected ?? "—"}</strong><small>{dailyComparison ? `${dailyComparison.already_in_master} already in master` : "Comparing with master…"}</small></article>
                   <article className="metric-card card"><span className="metric-icon metric-icon--amber">◷</span><span className="metric-label">Run status</span><strong>{runStatusLabel(searchRun?.status)}</strong><small>{searchRun && searchRun.status !== "completed" && searchRun.status !== "stopped" ? `${countryLabel(searchRun.countryCode)} · ${searchRun.cityLabel}${searchRun.runAllCountries ? " · All countries" : ""}` : linkedinTabFound ? "LinkedIn tab open" : "Open a LinkedIn tab to start"}</small></article>
@@ -1358,7 +1427,7 @@ export default function App() {
             )}
 
             {page === "queries" && (
-              <section className="card queries-card">
+              <section className="card queries-card" data-tour="queries-list">
                 <div className="section-title-row table-heading">
                   <div><h2>Query records <span className="count-badge">{queries.length}</span></h2><p className="muted">Filters are saved with each record for later use.</p></div>
                   <div className="button-row">
@@ -1366,11 +1435,11 @@ export default function App() {
                       const data = ["country_code,country,label,query_text,enabled,notes", ...orderedQueries.map((item) => [item.country_code, countryLabel(item.country_code), item.label, item.query_text, Boolean(item.enabled), item.notes].map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(","))].join("\r\n");
                       saveDownload(`job-post-queries-${countryFilePart(orderedQueries.map((item) => item.country_code))}.csv`, data, "text/csv;charset=utf-8");
                     }}>Export</button>
-                    <button className="button button--secondary button--small" type="button" onClick={() => setImportOpen(true)}>Import</button>
-                    <button className="button button--primary button--small" type="button" onClick={() => openEditor(null)}>＋ Add country</button>
+                    <button className="button button--secondary button--small" type="button" data-tour="queries-import" onClick={() => setImportOpen(true)}>Import</button>
+                    <button className="button button--primary button--small" type="button" data-tour="queries-add" onClick={() => openEditor(null)}>＋ Add country</button>
                   </div>
                 </div>
-                {queries.length === 0 ? <EmptyState title="No saved queries yet" text="Add a country with its first search record, or import query records." /> : (() => {
+                {queries.length === 0 ? <EmptyState title="No saved queries yet" text="Add a country with its first search record, import query records, or start with sample records you can edit." action={<button className="button button--primary button--small" type="button" onClick={() => void addSamples()}>Add sample queries</button>} /> : (() => {
                   const term = querySearch.trim().toLowerCase();
                   const matches = (query: QueryRecord) => !term
                     || `${query.label} ${query.query_text} ${countryLabel(query.country_code)} ${query.country_code}`.toLowerCase().includes(term);
@@ -1464,7 +1533,7 @@ export default function App() {
 
             {page === "history" && (
               <>
-                <section className="card filters-card">
+                <section className="card filters-card" data-tour="history-filters">
                   <label className="field"><span>Period</span><select value={historyPeriod} onChange={(event) => setHistoryPeriod(event.target.value as typeof historyPeriod)}><option value="day">Day</option><option value="week">Week</option><option value="month">Month</option></select></label>
                   <label className="field"><span>Date</span><input type="date" value={historyDate} onChange={(event) => setHistoryDate(event.target.value)} /></label>
                   <label className="field"><span>Country</span><select value={historyCountry} onChange={(event) => setHistoryCountry(event.target.value)}><option value="">All countries</option>{countries.map((country) => <option key={country} value={country}>{countryLabel(country)}</option>)}</select></label>
@@ -1512,7 +1581,7 @@ export default function App() {
 
             {page === "settings" && (
               <div className="sx-layout">
-                <nav className="sx-nav" aria-label="Settings sections">
+                <nav className="sx-nav" aria-label="Settings sections" data-tour="settings-nav">
                   {SETTINGS_SECTIONS.map((section) => (
                     <button key={section.id} type="button" className={`sx-nav-item ${settingsSection === section.id ? "sx-nav-item--active" : ""}`} aria-current={settingsSection === section.id ? "page" : undefined} onClick={() => setSettingsSection(section.id)}>
                       <span className="sx-nav-icon"><Icon name={section.icon} /></span>
@@ -1522,7 +1591,7 @@ export default function App() {
                   ))}
                 </nav>
 
-                <div className="sx-panel">
+                <div className="sx-panel" data-tour="settings-panel">
                   {settingsValidationMessage && <p className="alert alert--error" role="alert">{settingsValidationMessage}</p>}
 
                   {settingsSection === "general" && (
@@ -1890,6 +1959,14 @@ export default function App() {
           </div>
         </Modal>
       )}
+      {welcomeOpen && connected && (
+        <WelcomeTour
+          onClose={closeWelcome}
+          onAddSamples={addSamples}
+          onOpenQueries={() => { closeWelcome(); setPage("queries"); }}
+        />
+      )}
+      {tourPage && !welcomeOpen && tourPage === page && <PageTour key={tourPage} steps={PAGE_TOURS[tourPage]} onDone={closePageTour} />}
     </div>
   );
 }

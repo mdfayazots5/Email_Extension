@@ -1,9 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Email Extension",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Collects email addresses from LinkedIn job posts.",
-  "permissions": ["storage", "tabs", "sidePanel", "nativeMessaging"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtOGhGwctRh/Es7t4OAt6rHRHWwqZrYzn/LmR/Yd08vWBTVZVrziDWnUUiqxtrwxyF1PBSjz/NfV+HydPg2bRyug68Z8mHyEBkl8iFdLk5ZFGD5p/2HrPyUAn/+q3qBHPL1eOtMYWVGL4MUwUAJCMf4WejSR4HOALoPXFsqDMb1lwuoAyTYLzhVWzuQ9yWqbvciFZZjzkJ2lVwPRgxbl4tsd8wqV9oPCbmULkzELY4eNj5K61qYxZTK9QgTTUZFxzHgEqlX3AVWNo+LJYmyElgIEgGfQc7tQHJOV1evb9AouRGDdy0KG+Acep388NRKuk+Gw8GiqjWRTSx1QKwhWnvQIDAQAB",
+  "permissions": [
+    "storage",
+    "tabs",
+    "sidePanel",
+    "nativeMessaging"
+  ],
   "host_permissions": [
     "https://www.linkedin.com/*",
     "http://127.0.0.1:4317/*",
@@ -22,8 +28,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.linkedin.com/search/results/content/*"],
-      "js": ["content-script.js"],
+      "matches": [
+        "https://www.linkedin.com/search/results/content/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
       "run_at": "document_idle"
     }
   ]

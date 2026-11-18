@@ -2,6 +2,7 @@ import type { CountryFilterProfile, QueryRecord, SearchRunState } from "../api/t
 import { countryLabel } from "../ui/display";
 import { countryQueries } from "./query-chain";
 import { summarizeFilterParams } from "./search-url";
+import { attachBarGuide, BAR_GUIDE_CSS } from "./on-page-guide";
 
 type BarResponse = {
   ok?: boolean;
@@ -57,13 +58,14 @@ export function mountOnPageControlBar(): void {
         button:disabled { background: #303647; color: #bbc2d0; border-color: #50586b; }
         .error { color: #ff9da5; }
       }
+      ${BAR_GUIDE_CSS}
       @media (max-width: 560px) {
         :host { right: 8px; top: 8px; }
         .shell { width: calc(100vw - 16px); }
       }
     </style>
     <section class="shell" aria-label="Email Extension controls">
-      <div class="head"><span class="drag" tabindex="0" aria-label="Drag tracker control bar" title="Drag to move">Email Extension</span><button class="collapse" type="button" aria-label="Collapse control bar" aria-expanded="true" title="Collapse">−</button></div>
+      <div class="head"><span class="drag" tabindex="0" aria-label="Drag tracker control bar" title="Drag to move">Email Extension</span><span class="head-actions"><button class="help" type="button" aria-label="Show control bar tips" title="How to use this bar">?</button><button class="collapse" type="button" aria-label="Collapse control bar" aria-expanded="true" title="Collapse">−</button></span></div>
       <div class="body">
         <div class="row">
           <label>Country<select class="country" aria-label="Choose a country"><option value="">Loading countries…</option></select></label>
@@ -111,6 +113,8 @@ export function mountOnPageControlBar(): void {
   const panelStop = root.querySelector<HTMLButtonElement>(".panel-stop")!;
   const continueCountry = root.querySelector<HTMLButtonElement>(".panel-country")!;
   const skipCountry = root.querySelector<HTMLButtonElement>(".panel-skip-country")!;
+  const help = root.querySelector<HTMLButtonElement>(".help")!;
+  attachBarGuide(body, { country: countrySelect, record: select, start, stop, help }, help);
   let queries: QueryRecord[] = [];
   let countryFilters: CountryFilterProfile[] = [];
   let run: SearchRunState | null = null;
@@ -362,6 +366,8 @@ export function mountOnPageControlBar(): void {
       showError(error instanceof Error ? error.message : "Could not stop the run.");
     }
   });
+  // Tips live inside the body, so expand a collapsed bar when they are asked for.
+  help.addEventListener("click", () => { if (body.classList.contains("hidden")) collapse.click(); });
   collapse.addEventListener("click", () => {
     body.classList.toggle("hidden");
     const collapsed = body.classList.contains("hidden");
