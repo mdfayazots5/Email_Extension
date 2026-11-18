@@ -29,3 +29,8 @@
 /data/legacy-v0.3/
 # Visual Studio cache
 /.vs/
+# Private local files: never push (old v0.3 archive has real emails, legacy scripts
+# have local paths, keys/ holds the extension's private signing key)
+/archive/
+/service/scripts/
+/keys/
